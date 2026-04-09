@@ -92,12 +92,24 @@ type VerifyOptions struct {
 	// KycIdentifier is an optional caller-provided identifier for correlating sessions.
 	KycIdentifier string
 
-	// Images maps multipart field names to absolute file-system paths.
+	// Images maps multipart field names to image values.
 	// Keys follow the pattern "{step}_{challenge}", e.g.:
 	//   "selfie_center_face"    → /path/to/selfie.jpg
 	//   "recto_center_document" → /path/to/recto.jpg
 	//   "recto_tilt_left"       → /path/to/recto_tilt.jpg
+	//
+	// Each string value is resolved in order:
+	//   - "http://" or "https://" prefix  → URL, downloaded automatically
+	//   - "data:image/" prefix            → data URI, base64 decoded
+	//   - long string without path sep.   → treated as raw base64, decoded
+	//   - otherwise                       → filesystem path, read from disk
 	Images map[string]string
+
+	// ImageBytes maps multipart field names to raw image bytes.
+	// Useful when the caller already has the image data in memory.
+	// Entries in ImageBytes are processed after Images (same field names
+	// in ImageBytes take priority).
+	ImageBytes map[string][]byte
 }
 
 // ─── Challenges Response ──────────────────────────────────────────────────────

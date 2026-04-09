@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -337,26 +338,34 @@ public final class KyvShield {
             parts.add(textPart(boundary, "kyc_identifier", options.getKycIdentifier()));
         }
 
-        // ── Image files ──────────────────────────────────────────────────────
+        // ── Image files (string: path / URL / base64 / data URI) ─────────────
 
         for (Map.Entry<String, String> entry : options.getImages().entrySet()) {
             String fieldName = entry.getKey();
-            String filePath  = entry.getValue();
+            String value     = entry.getValue();
 
-            Path path = Paths.get(filePath);
-            if (!Files.exists(path)) {
-                throw new KyvShieldException("Image file not found: " + filePath);
-            }
-
-            byte[] imageBytes;
-            try {
-                imageBytes = Files.readAllBytes(path);
-            } catch (IOException e) {
-                throw new KyvShieldException("Cannot read image file: " + filePath, e);
-            }
-
-            String filename = path.getFileName().toString();
+            byte[] imageBytes = resolveImage(value);
+            String filename   = deriveFilename(value, fieldName);
             String contentType = inferContentType(filename);
+
+            String header = dashBoundary
+                    + "Content-Disposition: form-data; name=\"" + fieldName
+                    + "\"; filename=\"" + filename + "\"" + crlf
+                    + "Content-Type: " + contentType + crlf
+                    + crlf;
+
+            parts.add(concat(header.getBytes(StandardCharsets.UTF_8),
+                    imageBytes,
+                    crlf.getBytes(StandardCharsets.UTF_8)));
+        }
+
+        // ── Raw-bytes image map ───────────────────────────────────────────────
+
+        for (Map.Entry<String, byte[]> entry : options.getImageBytes().entrySet()) {
+            String fieldName = entry.getKey();
+            byte[] imageBytes = entry.getValue();
+            String filename   = fieldName + ".jpg";
+            String contentType = inferContentTypeFromBytes(imageBytes);
 
             String header = dashBoundary
                     + "Content-Disposition: form-data; name=\"" + fieldName
@@ -409,6 +418,102 @@ public final class KyvShield {
             pos += a.length;
         }
         return result;
+    }
+
+    /**
+     * Resolves an image string value to raw bytes.
+     *
+     * Supported formats (checked in order):
+     * <ol>
+     *   <li>{@code http://} / {@code https://} URL — fetched via HttpClient</li>
+     *   <li>{@code data:image/…;base64,…} data URI — base64 decoded</li>
+     *   <li>Bare base64 string (no path separator, length &gt; 64, no extension) — decoded</li>
+     *   <li>Filesystem path — read with {@link Files#readAllBytes}</li>
+     * </ol>
+     */
+    private byte[] resolveImage(String value) {
+        // 1. URL
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(value))
+                    .GET()
+                    .timeout(Duration.ofSeconds(30))
+                    .build();
+            try {
+                HttpResponse<byte[]> res = httpClient.send(req, HttpResponse.BodyHandlers.ofByteArray());
+                if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                    throw new KyvShieldException("Failed to download image from URL \"" + value
+                            + "\": HTTP " + res.statusCode());
+                }
+                return res.body();
+            } catch (IOException e) {
+                throw new KyvShieldException("Network error downloading image from \"" + value + "\": " + e.getMessage(), e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new KyvShieldException("Interrupted while downloading image from \"" + value + "\"", e);
+            }
+        }
+
+        // 2. Data URI
+        if (value.startsWith("data:image/")) {
+            int commaIdx = value.indexOf(',');
+            if (commaIdx == -1) {
+                throw new KyvShieldException("Invalid data URI for image");
+            }
+            String b64 = value.substring(commaIdx + 1);
+            return Base64.getDecoder().decode(b64);
+        }
+
+        // 3. Bare base64 (no path separators, long, no extension)
+        if (!value.contains("/") && !value.contains("\\")
+                && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$")) {
+            return Base64.getDecoder().decode(value);
+        }
+
+        // 4. Filesystem path
+        Path path = Paths.get(value);
+        if (!Files.exists(path)) {
+            throw new KyvShieldException("Image file not found: " + value);
+        }
+        try {
+            return Files.readAllBytes(path);
+        } catch (IOException e) {
+            throw new KyvShieldException("Cannot read image file: " + value, e);
+        }
+    }
+
+    /** Derives a sensible filename from an image value (for multipart content-disposition). */
+    private static String deriveFilename(String value, String fieldName) {
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            // Extract last path segment from URL, strip query string
+            String path = URI.create(value).getPath();
+            if (path != null && !path.isEmpty()) {
+                int slash = path.lastIndexOf('/');
+                String seg = (slash >= 0) ? path.substring(slash + 1) : path;
+                if (!seg.isEmpty()) return seg;
+            }
+            return fieldName + ".jpg";
+        }
+        if (value.startsWith("data:image/") || (!value.contains("/") && !value.contains("\\")
+                && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$"))) {
+            return fieldName + ".jpg";
+        }
+        // Filesystem path — use basename
+        Path p = Paths.get(value);
+        return p.getFileName().toString();
+    }
+
+    /** Infers the MIME content type from the first bytes of an image (magic bytes). */
+    private static String inferContentTypeFromBytes(byte[] bytes) {
+        if (bytes.length >= 4) {
+            if (bytes[0] == (byte)0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G') {
+                return "image/png";
+            }
+            if (bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F') {
+                return "image/webp";
+            }
+        }
+        return "image/jpeg"; // default
     }
 
     /** Infers the MIME content type from a file name extension. */

@@ -340,13 +340,18 @@ data class VerifyOptions(
     val kycIdentifier: String? = null,
 
     /**
-     * Map of image files to submit.
+     * Map of images to submit.
      * Keys follow the pattern `{step}_{challenge}`, e.g.:
      * - `"selfie_center_face"`
      * - `"recto_center_document"`
      * - `"recto_tilt_left"`
      *
-     * Values are absolute file-system paths to JPEG/PNG images.
+     * Values can be one of four types:
+     * - **[ByteArray]** — raw image bytes, used directly
+     * - **`http://…` / `https://…`** — URL, the SDK downloads automatically
+     * - **`data:image/…;base64,…`** — data URI, the SDK strips the prefix and decodes
+     * - **base64 string** — long string without path separators, decoded as base64
+     * - **file path** — any other string is treated as a local filesystem path
      */
-    val images: Map<String, String>,
+    val images: Map<String, Any>,
 )

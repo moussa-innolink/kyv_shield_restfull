@@ -40,10 +40,23 @@ public final class VerifyOptions {
 
     /**
      * Image map where keys follow the pattern {@code {step}_{challenge}}
-     * (e.g. {@code "recto_center_document"}) and values are absolute or
-     * relative file-system paths to JPEG/PNG images.
+     * (e.g. {@code "recto_center_document"}) and values are one of:
+     * <ul>
+     *   <li>absolute or relative filesystem path</li>
+     *   <li>{@code http://} / {@code https://} URL (downloaded by the SDK)</li>
+     *   <li>{@code data:image/…;base64,…} data URI</li>
+     *   <li>bare base64-encoded string</li>
+     * </ul>
+     * For raw bytes, use {@link #imageBytes} instead.
      */
     private final Map<String, String> images;
+
+    /**
+     * Raw-bytes image map. Keys follow the same {@code {step}_{challenge}}
+     * pattern; values are byte arrays containing the raw image data.
+     * Entries here are merged with (and take priority over) {@link #images}.
+     */
+    private final Map<String, byte[]> imageBytes;
 
     private VerifyOptions(Builder builder) {
         if (builder.steps == null || builder.steps.isEmpty()) {
@@ -52,7 +65,9 @@ public final class VerifyOptions {
         if (builder.target == null || builder.target.isEmpty()) {
             throw new IllegalArgumentException("target must not be null or empty");
         }
-        if (builder.images == null || builder.images.isEmpty()) {
+        boolean hasImages = (builder.images != null && !builder.images.isEmpty())
+                || (builder.imageBytes != null && !builder.imageBytes.isEmpty());
+        if (!hasImages) {
             throw new IllegalArgumentException("images must contain at least one entry");
         }
 
@@ -65,7 +80,8 @@ public final class VerifyOptions {
         this.versoChallengeMode  = builder.versoChallengeMode;
         this.requireFaceMatch    = builder.requireFaceMatch;
         this.kycIdentifier       = builder.kycIdentifier;
-        this.images              = Collections.unmodifiableMap(new HashMap<>(builder.images));
+        this.images              = Collections.unmodifiableMap(new HashMap<>(builder.images != null ? builder.images : new HashMap<>()));
+        this.imageBytes          = Collections.unmodifiableMap(new HashMap<>(builder.imageBytes != null ? builder.imageBytes : new HashMap<>()));
     }
 
     // ── Getters ───────────────────────────────────────────────────────────────
@@ -126,10 +142,18 @@ public final class VerifyOptions {
 
     /**
      * Returns the image map: keys are {@code {step}_{challenge}} patterns;
-     * values are file-system paths.
+     * values are file-system paths, URLs, data URIs, or base64 strings.
      */
     public Map<String, String> getImages() {
         return images;
+    }
+
+    /**
+     * Returns the raw-bytes image map: keys are {@code {step}_{challenge}} patterns;
+     * values are raw image bytes.
+     */
+    public Map<String, byte[]> getImageBytes() {
+        return imageBytes;
     }
 
     // ── Builder ───────────────────────────────────────────────────────────────
@@ -147,6 +171,7 @@ public final class VerifyOptions {
         private boolean requireFaceMatch = false;
         private String kycIdentifier;
         private Map<String, String> images = new HashMap<>();
+        private Map<String, byte[]> imageBytes = new HashMap<>();
 
         /**
          * Sets the ordered list of steps to execute.
@@ -278,11 +303,34 @@ public final class VerifyOptions {
         /**
          * Replaces the entire image map.
          *
-         * @param images map of image keys to file paths
+         * @param images map of image keys to file paths / URLs / base64 strings
          * @return this builder
          */
         public Builder images(Map<String, String> images) {
             this.images = new HashMap<>(images);
+            return this;
+        }
+
+        /**
+         * Adds a single raw-bytes image entry.
+         *
+         * @param key   image key following the pattern {@code {step}_{challenge}}
+         * @param data  raw image bytes (JPEG, PNG, etc.)
+         * @return this builder
+         */
+        public Builder addImageBytes(String key, byte[] data) {
+            this.imageBytes.put(key, data);
+            return this;
+        }
+
+        /**
+         * Replaces the entire raw-bytes image map.
+         *
+         * @param imageBytes map of image keys to raw byte arrays
+         * @return this builder
+         */
+        public Builder imageBytes(Map<String, byte[]> imageBytes) {
+            this.imageBytes = new HashMap<>(imageBytes);
             return this;
         }
 

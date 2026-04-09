@@ -22,6 +22,8 @@ export interface ChallengeModeMap {
 }
 /** Full challenges response from GET /api/v1/challenges */
 export interface ChallengesResponse {
+    /** Whether the API call itself succeeded */
+    success: boolean;
     challenges: {
         /** Challenges applicable to document steps (recto / verso) */
         document: ChallengeModeMap;
@@ -188,15 +190,20 @@ export interface VerifyOptions {
      */
     kycIdentifier?: string;
     /**
-     * Map of image files to submit.
+     * Map of images to submit.
      * Keys follow the pattern `{step}_{challenge}`, e.g.:
      * - `'selfie_center_face'`
      * - `'recto_center_document'`
      * - `'recto_tilt_left'`
      *
-     * Values are absolute or relative file-system paths to JPEG/PNG images.
+     * Values can be one of four formats:
+     * - **Buffer** — raw image bytes, used directly
+     * - **`http://…` / `https://…`** — URL, the SDK downloads automatically
+     * - **`data:image/…;base64,…`** — data URI, the SDK strips the prefix and decodes
+     * - **base64 string** — long string without path separators, decoded as base64
+     * - **file path** — any other string is treated as a local filesystem path
      */
-    images: Record<string, string>;
+    images: Record<string, string | Buffer>;
 }
 /** Structured error thrown by the SDK */
 export interface KyvShieldErrorDetails {
@@ -205,4 +212,9 @@ export interface KyvShieldErrorDetails {
     /** Raw response body, if available */
     body?: unknown;
 }
+/**
+ * Alias for the settled result of a single entry in a {@link KyvShield.verifyBatch} call.
+ * Use the `status` discriminant to distinguish fulfilled from rejected entries.
+ */
+export type BatchResult = PromiseSettledResult<KycResponse>;
 //# sourceMappingURL=types.d.ts.map

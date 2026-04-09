@@ -29,7 +29,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import FormData from 'form-data';
 export * from './types.js';
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DEFAULT_BASE_URL = 'https://kyvshield-naruto.innolinkcloud.com';
@@ -101,6 +100,7 @@ export class KyvShield {
         const response = await fetch(url, {
             method: 'GET',
             headers: this.buildHeaders(),
+            signal: AbortSignal.timeout(120_000),
         });
         await this.assertOk(response);
         return response.json();
@@ -139,22 +139,34 @@ export class KyvShield {
      */
     async verify(options) {
         this.validateVerifyOptions(options);
-        const form = this.buildFormData(options);
+        const { body, contentType } = await this.buildMultipartBody(options);
         const url = `${this.baseUrl}${API_VERSION}/kyc/verify`;
-        // form-data provides its own headers (with boundary); merge with our auth header
-        const headers = {
-            'X-API-Key': this.apiKey,
-            ...form.getHeaders(),
-        };
         const response = await fetch(url, {
             method: 'POST',
-            headers,
-            // form.getBuffer() returns a Buffer; Node 18 native fetch accepts it.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            body: form.getBuffer(),
+            headers: {
+                'X-API-Key': this.apiKey,
+                'Content-Type': contentType,
+            },
+            body,
+            signal: AbortSignal.timeout(120_000),
         });
         await this.assertOk(response);
         return response.json();
+    }
+    /**
+     * Submit multiple KYC verification requests concurrently.
+     * All requests run in parallel; results are settled (fulfilled or rejected).
+     *
+     * @param optionsList - Array of VerifyOptions (max 10 entries).
+     * @returns Array of PromiseSettledResult in the same order as the input.
+     *
+     * @throws {@link KyvShieldError} if the batch size exceeds 10.
+     */
+    async verifyBatch(optionsList) {
+        if (optionsList.length > 10) {
+            throw new KyvShieldError('Batch size cannot exceed 10');
+        }
+        return Promise.allSettled(optionsList.map(opts => this.verify(opts)));
     }
     /**
      * Verify an incoming webhook signature.
@@ -218,6 +230,8 @@ export class KyvShield {
     /**
      * Validate required fields in {@link VerifyOptions} before sending.
      * Throws a descriptive {@link KyvShieldError} on the first problem found.
+     * Note: file-path existence is only checked for plain path strings (not URLs,
+     * base64, or Buffers — those are validated/fetched at send time).
      */
     validateVerifyOptions(options) {
         if (!options.steps || options.steps.length === 0) {
@@ -229,52 +243,122 @@ export class KyvShield {
         if (!options.images || Object.keys(options.images).length === 0) {
             throw new KyvShieldError('VerifyOptions.images must contain at least one entry');
         }
-        // Validate that all image files exist on disk
-        for (const [key, filePath] of Object.entries(options.images)) {
-            const resolved = path.resolve(filePath);
+        // Only validate file existence for plain filesystem paths
+        for (const [key, value] of Object.entries(options.images)) {
+            if (Buffer.isBuffer(value))
+                continue;
+            if (value.startsWith('http://') || value.startsWith('https://'))
+                continue;
+            if (value.startsWith('data:image/'))
+                continue;
+            // Check if it looks like a base64 string (no path separator, long, no extension)
+            if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value))
+                continue;
+            const resolved = path.resolve(value);
             if (!fs.existsSync(resolved)) {
                 throw new KyvShieldError(`Image file for "${key}" not found: ${resolved}`);
             }
         }
     }
     /**
-     * Build the `multipart/form-data` body from {@link VerifyOptions}.
+     * Resolve an image value (Buffer, URL, data URI, base64, or file path)
+     * into raw bytes.
      *
-     * Text fields are appended first, followed by binary image fields.
+     * @param value - The image value from {@link VerifyOptions.images}.
+     * @returns A Buffer containing the image bytes.
      */
-    buildFormData(options) {
-        const form = new FormData();
+    async resolveImage(value) {
+        // 1. Already raw bytes
+        if (Buffer.isBuffer(value)) {
+            return value;
+        }
+        // 2. URL — download with a 30-second timeout
+        if (value.startsWith('http://') || value.startsWith('https://')) {
+            const response = await fetch(value, {
+                signal: AbortSignal.timeout(30_000),
+            });
+            if (!response.ok) {
+                throw new KyvShieldError(`Failed to download image from URL "${value}": HTTP ${response.status}`);
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            return Buffer.from(arrayBuffer);
+        }
+        // 3. Data URI — strip prefix and decode base64
+        if (value.startsWith('data:image/')) {
+            const commaIndex = value.indexOf(',');
+            if (commaIndex === -1) {
+                throw new KyvShieldError(`Invalid data URI for image: "${value.slice(0, 40)}..."`);
+            }
+            const b64 = value.slice(commaIndex + 1);
+            return Buffer.from(b64, 'base64');
+        }
+        // 4. Base64 string (no path separators, long, no file extension)
+        if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value)) {
+            return Buffer.from(value, 'base64');
+        }
+        // 5. File path
+        const resolved = path.resolve(value);
+        return fs.readFileSync(resolved);
+    }
+    /**
+     * Build a native `multipart/form-data` body from {@link VerifyOptions}.
+     *
+     * Constructs the multipart body manually using `Buffer.concat` without any
+     * external dependency. Returns the binary body and the Content-Type header
+     * value (which includes the boundary).
+     *
+     * This method is async to support URL image downloads.
+     */
+    async buildMultipartBody(options) {
+        const boundary = crypto.randomUUID().replace(/-/g, '');
+        const CRLF = '\r\n';
+        const parts = [];
+        const textPart = (name, value) => {
+            const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}`;
+            return Buffer.concat([Buffer.from(header), Buffer.from(value, 'utf8'), Buffer.from(CRLF)]);
+        };
+        const filePart = (name, filename, mimeType, data) => {
+            const header = `--${boundary}${CRLF}` +
+                `Content-Disposition: form-data; name="${name}"; filename="${filename}"${CRLF}` +
+                `Content-Type: ${mimeType}${CRLF}${CRLF}`;
+            return Buffer.concat([Buffer.from(header), data, Buffer.from(CRLF)]);
+        };
         // ── Text fields ─────────────────────────────────────────────────────────
-        // steps is a JSON array string, e.g. '["selfie","recto","verso"]'
-        form.append('steps', JSON.stringify(options.steps));
-        form.append('target', options.target);
-        form.append('language', options.language ?? 'fr');
-        form.append('challenge_mode', options.challengeMode ?? 'standard');
+        parts.push(textPart('steps', JSON.stringify(options.steps)));
+        parts.push(textPart('target', options.target));
+        parts.push(textPart('language', options.language ?? 'fr'));
+        parts.push(textPart('challenge_mode', options.challengeMode ?? 'standard'));
         if (options.selfieChallengeMode !== undefined) {
-            form.append('selfie_challenge_mode', options.selfieChallengeMode);
+            parts.push(textPart('selfie_challenge_mode', options.selfieChallengeMode));
         }
         if (options.rectoChallengeMode !== undefined) {
-            form.append('recto_challenge_mode', options.rectoChallengeMode);
+            parts.push(textPart('recto_challenge_mode', options.rectoChallengeMode));
         }
         if (options.versoChallengeMode !== undefined) {
-            form.append('verso_challenge_mode', options.versoChallengeMode);
+            parts.push(textPart('verso_challenge_mode', options.versoChallengeMode));
         }
-        form.append('require_face_match', options.requireFaceMatch === true ? 'true' : 'false');
+        parts.push(textPart('require_face_match', options.requireFaceMatch === true ? 'true' : 'false'));
         if (options.kycIdentifier !== undefined) {
-            form.append('kyc_identifier', options.kycIdentifier);
+            parts.push(textPart('kyc_identifier', options.kycIdentifier));
         }
-        // ── Image files ─────────────────────────────────────────────────────────
-        for (const [key, filePath] of Object.entries(options.images)) {
-            const resolved = path.resolve(filePath);
-            const buffer = fs.readFileSync(resolved);
-            const filename = path.basename(resolved);
+        // ── Image files (resolve all formats) ───────────────────────────────────
+        for (const [key, value] of Object.entries(options.images)) {
+            const data = await this.resolveImage(value);
+            // Determine a sensible filename for the multipart field
+            let filename = 'image.jpg';
+            if (!Buffer.isBuffer(value) && !value.startsWith('data:image/') && !value.startsWith('http')) {
+                // Plain path — use the basename
+                filename = path.basename(value.includes('/') || value.includes('\\') ? value : key + '.jpg');
+            }
             const mimeType = this.guessMimeType(filename);
-            form.append(key, buffer, {
-                filename,
-                contentType: mimeType,
-            });
+            parts.push(filePart(key, filename, mimeType, data));
         }
-        return form;
+        // ── Closing boundary ────────────────────────────────────────────────────
+        parts.push(Buffer.from(`--${boundary}--${CRLF}`));
+        return {
+            body: Buffer.concat(parts),
+            contentType: `multipart/form-data; boundary=${boundary}`,
+        };
     }
     /**
      * Throw a {@link KyvShieldError} when the HTTP response is not successful (2xx).

@@ -354,19 +354,32 @@ final class KyvShield
             ));
         }
 
-        foreach ($options->images as $fieldName => $filePath) {
-            if (!is_file($filePath)) {
+        foreach ($options->images as $fieldName => $value) {
+            // Only validate plain filesystem paths; URLs, data URIs, and base64
+            // strings are resolved lazily when building the multipart body.
+            if (str_starts_with($value, 'http://') || str_starts_with($value, 'https://')) {
+                continue; // URL — resolved at send time
+            }
+            if (str_starts_with($value, 'data:image/')) {
+                continue; // Data URI — decoded at send time
+            }
+            // Heuristic for a bare base64 string: no path separators, very long, no extension
+            if (!str_contains($value, '/') && !str_contains($value, '\\')
+                && strlen($value) > 64 && !preg_match('/\.\w{2,5}$/', $value)) {
+                continue; // Base64 string — decoded at send time
+            }
+            if (!is_file($value)) {
                 throw new KyvShieldException(sprintf(
                     'Image file not found for field "%s": %s',
                     $fieldName,
-                    $filePath,
+                    $value,
                 ));
             }
-            if (!is_readable($filePath)) {
+            if (!is_readable($value)) {
                 throw new KyvShieldException(sprintf(
                     'Image file is not readable for field "%s": %s',
                     $fieldName,
-                    $filePath,
+                    $value,
                 ));
             }
         }
@@ -398,12 +411,107 @@ final class KyvShield
         }
 
         // Image files — each keyed as {step}_{challenge}, e.g. recto_center_document
-        foreach ($options->images as $fieldName => $filePath) {
-            $mimeType = $this->detectMimeType($filePath);
-            $fields[$fieldName] = new \CURLFile($filePath, $mimeType, basename($filePath));
+        foreach ($options->images as $fieldName => $value) {
+            // Check if this is a plain file path that we can pass directly as a CURLFile
+            // (saves memory for large files compared to reading into a string first).
+            $isPlainFilePath = !str_starts_with($value, 'http://')
+                && !str_starts_with($value, 'https://')
+                && !str_starts_with($value, 'data:image/')
+                && (str_contains($value, '/') || str_contains($value, '\\') || preg_match('/\.\w{2,5}$/', $value))
+                && is_file($value);
+
+            if ($isPlainFilePath) {
+                $mimeType = $this->detectMimeType($value);
+                $fields[$fieldName] = new \CURLFile($value, $mimeType, basename($value));
+            } else {
+                // Resolve to raw bytes and write to a temp file so curl can send it
+                $bytes    = $this->resolveImage($value);
+                $tmpFile  = tempnam(sys_get_temp_dir(), 'kyv_');
+                if ($tmpFile === false) {
+                    throw new KyvShieldException('Could not create temporary file for image field "' . $fieldName . '"');
+                }
+                file_put_contents($tmpFile, $bytes);
+                $mimeType = 'image/jpeg'; // default; sniff first bytes if needed
+                if (strlen($bytes) >= 4) {
+                    $magic = substr($bytes, 0, 4);
+                    if (str_starts_with($magic, "\x89PNG")) {
+                        $mimeType = 'image/png';
+                    } elseif (str_starts_with($magic, 'RIFF')) {
+                        $mimeType = 'image/webp';
+                    }
+                }
+                $fields[$fieldName] = new \CURLFile($tmpFile, $mimeType, $fieldName . '.jpg');
+            }
         }
 
         return $fields;
+    }
+
+    /**
+     * Resolve an image value to raw bytes.
+     *
+     * Accepted formats (checked in order):
+     *  1. `http://` / `https://` URL   → downloaded via curl
+     *  2. `data:image/…;base64,…`      → base64 decoded
+     *  3. bare base64 string            → base64 decoded
+     *  4. filesystem path               → read from disk
+     *
+     * @throws KyvShieldException on download failure or unreadable file
+     */
+    private function resolveImage(string $value): string
+    {
+        // 1. URL
+        if (str_starts_with($value, 'http://') || str_starts_with($value, 'https://')) {
+            $ch = curl_init($value);
+            if ($ch === false) {
+                throw new KyvShieldException('curl_init failed for image URL: ' . $value);
+            }
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+            $bytes = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $error = curl_error($ch);
+            curl_close($ch);
+            if ($errno !== 0 || $bytes === false) {
+                throw new KyvShieldException('Failed to download image from "' . $value . '": ' . $error);
+            }
+            return (string) $bytes;
+        }
+
+        // 2. Data URI
+        if (str_starts_with($value, 'data:image/')) {
+            $commaPos = strpos($value, ',');
+            if ($commaPos === false) {
+                throw new KyvShieldException('Invalid data URI for image field');
+            }
+            $b64   = substr($value, $commaPos + 1);
+            $bytes = base64_decode($b64, true);
+            if ($bytes === false) {
+                throw new KyvShieldException('Failed to decode base64 data URI');
+            }
+            return $bytes;
+        }
+
+        // 3. Bare base64 string (no path separators, very long, no extension)
+        if (!str_contains($value, '/') && !str_contains($value, '\\')
+            && strlen($value) > 64 && !preg_match('/\.\w{2,5}$/', $value)) {
+            $bytes = base64_decode($value, true);
+            if ($bytes === false) {
+                throw new KyvShieldException('Failed to decode base64 image string');
+            }
+            return $bytes;
+        }
+
+        // 4. Filesystem path
+        if (!is_file($value) || !is_readable($value)) {
+            throw new KyvShieldException('Image file not found or not readable: ' . $value);
+        }
+        $bytes = file_get_contents($value);
+        if ($bytes === false) {
+            throw new KyvShieldException('Failed to read image file: ' . $value);
+        }
+        return $bytes;
     }
 
     /**

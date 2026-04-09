@@ -1,0 +1,372 @@
+# @kyvshield/rest-sdk
+
+Fully typed Node.js / TypeScript SDK for the [KyvShield](https://kyvshield.com) KYC REST API.
+
+Requires **Node.js 18+** (uses native `fetch` and `crypto`).
+
+---
+
+## Installation
+
+```bash
+npm install @kyvshield/rest-sdk
+# or
+yarn add @kyvshield/rest-sdk
+# or
+pnpm add @kyvshield/rest-sdk
+```
+
+---
+
+## Quick start
+
+```typescript
+import { KyvShield } from '@kyvshield/rest-sdk';
+
+const kyv = new KyvShield('your-api-key');
+
+const result = await kyv.verify({
+  steps: ['selfie', 'recto', 'verso'],
+  target: 'SN-CIN',
+  language: 'fr',
+  challengeMode: 'standard',
+  requireFaceMatch: true,
+  images: {
+    // key = {step}_{challenge}
+    selfie_center_face:    './images/selfie.jpg',
+    selfie_close_eyes:     './images/selfie_eyes_closed.jpg',
+    recto_center_document: './images/recto.jpg',
+    recto_tilt_left:       './images/recto_tilt_left.jpg',
+    verso_center_document: './images/verso.jpg',
+  },
+});
+
+if (result.overall_status === 'pass') {
+  console.log('KYC passed!', result.session_id);
+} else {
+  console.warn('KYC rejected:', result.steps.map(s => s.user_messages).flat());
+}
+```
+
+---
+
+## API Reference
+
+### `new KyvShield(apiKey, baseUrl?)`
+
+| Parameter | Type     | Default                                         | Description                    |
+|-----------|----------|-------------------------------------------------|--------------------------------|
+| `apiKey`  | `string` | —                                               | Your KyvShield API key         |
+| `baseUrl` | `string` | `https://kyvshield-naruto.innolinkcloud.com`    | Override for staging/local use |
+
+```typescript
+// Production (default)
+const kyv = new KyvShield('your-api-key');
+
+// Local development
+const kyv = new KyvShield('your-api-key', 'http://localhost:8080');
+```
+
+---
+
+### `kyv.getChallenges()`
+
+Returns the available challenge names grouped by type (`document` / `selfie`) and mode (`minimal` / `standard` / `strict`).
+
+Use this to discover which image keys you need to provide for a given `challengeMode`.
+
+```typescript
+const { challenges } = await kyv.getChallenges();
+
+// challenges.document.standard => ['center_document', 'tilt_left', 'tilt_right']
+// challenges.selfie.minimal    => ['center_face', 'close_eyes']
+```
+
+**Return type:** [`ChallengesResponse`](#challengesresponse)
+
+---
+
+### `kyv.verify(options)`
+
+Submit a KYC verification request. Reads image files from disk and sends them as multipart form data.
+
+```typescript
+const result = await kyv.verify({
+  steps: ['selfie', 'recto'],
+  target: 'SN-CIN',
+  language: 'en',
+  challengeMode: 'minimal',
+  requireFaceMatch: true,
+  kycIdentifier: 'user-ref-42',
+  images: {
+    selfie_center_face:    './selfie.jpg',
+    recto_center_document: './recto.jpg',
+  },
+});
+```
+
+**Options:** [`VerifyOptions`](#verifyoptions)
+
+**Return type:** [`KycResponse`](#kycresponse)
+
+---
+
+### `KyvShield.verifyWebhookSignature(payload, apiKey, signatureHeader)`
+
+Static method. Validates an incoming KyvShield webhook using HMAC-SHA256.
+
+```typescript
+// Express example
+import express from 'express';
+import { KyvShield } from '@kyvshield/rest-sdk';
+
+const app = express();
+
+app.post('/webhook', express.raw({ type: '*/*' }), (req, res) => {
+  const valid = KyvShield.verifyWebhookSignature(
+    req.body,                                        // Buffer
+    process.env.KYVSHIELD_API_KEY!,
+    req.headers['x-kyvshield-signature'] as string,
+  );
+
+  if (!valid) return res.status(401).send('Invalid signature');
+
+  const event = JSON.parse(req.body.toString());
+  console.log('Webhook event:', event);
+  res.sendStatus(200);
+});
+```
+
+| Parameter           | Type     | Description                                           |
+|---------------------|----------|-------------------------------------------------------|
+| `payload`           | `Buffer` | Raw request body                                      |
+| `apiKey`            | `string` | Your KyvShield API key                                |
+| `signatureHeader`   | `string` | Value of `X-KyvShield-Signature` from the HTTP header |
+
+Returns `true` if the signature is valid, `false` otherwise.
+
+---
+
+## Types Reference
+
+### `VerifyOptions`
+
+```typescript
+interface VerifyOptions {
+  /** Steps to execute in order. */
+  steps: Step[];                          // e.g. ['selfie', 'recto', 'verso']
+
+  /** Document type. */
+  target: DocumentTarget;                 // e.g. 'SN-CIN'
+
+  /** Response language. Default: 'fr' */
+  language?: Language;                    // 'fr' | 'en' | 'wo'
+
+  /** Global challenge intensity. Default: 'standard' */
+  challengeMode?: ChallengeMode;          // 'minimal' | 'standard' | 'strict'
+
+  /** Per-step overrides */
+  selfieChallengeMode?: ChallengeMode;
+  rectoChallengeMode?: ChallengeMode;
+  versoChallengeMode?: ChallengeMode;
+
+  /** Whether to match selfie face against document photo. Default: false */
+  requireFaceMatch?: boolean;
+
+  /** Your internal reference ID, echoed back in the response. */
+  kycIdentifier?: string;
+
+  /**
+   * Map of images to submit.
+   * Key format: `{step}_{challenge}`, e.g. 'recto_center_document'
+   * Value: path to the image file on disk.
+   */
+  images: Record<string, string>;
+}
+```
+
+### `KycResponse`
+
+```typescript
+interface KycResponse {
+  success: boolean;
+  session_id: string;
+  overall_status: 'pass' | 'reject';
+  overall_confidence: number;        // 0–1
+  processing_time_ms: number;
+  face_verification?: FaceVerification;
+  steps: StepResult[];
+}
+```
+
+### `StepResult`
+
+```typescript
+interface StepResult {
+  step_index: number;
+  step_type: 'selfie' | 'recto' | 'verso';
+  success: boolean;
+  processing_time_ms: number;
+
+  liveness: {
+    is_live: boolean;
+    score: number;                    // 0–1
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  };
+
+  verification: {
+    is_authentic: boolean;
+    confidence: number;               // 0–1
+    checks_passed: string[];
+    fraud_indicators: string[];
+    warnings: string[];
+    issues: string[];
+  };
+
+  user_messages: string[];
+
+  // Document steps (recto / verso) only:
+  aligned_document?: string;          // base64 JPEG
+  extraction?: ExtractionField[];
+  extracted_photos?: ExtractedPhoto[];
+
+  // Selfie step only:
+  captured_image?: string;            // base64 JPEG
+}
+```
+
+### `ExtractionField`
+
+```typescript
+interface ExtractionField {
+  key: string;
+  document_key: string;
+  label: string;
+  value: string;
+  display_priority: number;
+  icon?: string;
+}
+```
+
+### `ExtractedPhoto`
+
+```typescript
+interface ExtractedPhoto {
+  image: string;          // base64 JPEG
+  confidence: number;     // 0–1
+  bbox: number[];         // [x, y, width, height]
+  area: number;
+  width: number;
+  height: number;
+}
+```
+
+### `FaceVerification`
+
+```typescript
+interface FaceVerification {
+  is_match: boolean;
+  similarity_score: number;   // 0–100
+}
+```
+
+### `ChallengesResponse`
+
+```typescript
+interface ChallengesResponse {
+  challenges: {
+    document: { minimal: string[]; standard: string[]; strict: string[] };
+    selfie:   { minimal: string[]; standard: string[]; strict: string[] };
+  };
+}
+```
+
+---
+
+## Error handling
+
+All API errors throw a `KyvShieldError`:
+
+```typescript
+import { KyvShield, KyvShieldError } from '@kyvshield/rest-sdk';
+
+try {
+  const result = await kyv.verify({ ... });
+} catch (e) {
+  if (e instanceof KyvShieldError) {
+    console.error('Status code:', e.statusCode);   // e.g. 401, 422, 500
+    console.error('Body:', e.body);                // parsed JSON body when available
+    console.error('Message:', e.message);
+  }
+}
+```
+
+The SDK also throws `KyvShieldError` (without a `statusCode`) for:
+- Empty API key in the constructor
+- Empty `steps` array
+- Empty `target` string
+- Empty `images` map
+- Image file path that does not exist on disk
+
+---
+
+## Building
+
+```bash
+npm install
+npm run build      # outputs to ./dist
+npm run lint       # type-check only, no emit
+npm run build:watch
+```
+
+---
+
+## Running the test suite
+
+Ensure the KyvShield backend is running locally on port 8080, then:
+
+```bash
+npx ts-node --esm test.ts
+```
+
+The test script covers:
+- Constructor validation
+- Webhook signature verification (HMAC-SHA256, timing-safe comparison)
+- `VerifyOptions` validation (no network)
+- `getChallenges()` (network)
+- `verify()` with a single recto step (network)
+- `verify()` with recto + verso steps (network)
+
+---
+
+## Challenge modes
+
+| Mode       | Document challenges                                                        | Selfie challenges                                               |
+|------------|----------------------------------------------------------------------------|-----------------------------------------------------------------|
+| `minimal`  | `center_document`                                                          | `center_face`, `close_eyes`                                     |
+| `standard` | `center_document`, `tilt_left`, `tilt_right`                               | `center_face`, `close_eyes`, `turn_left`, `turn_right`          |
+| `strict`   | `center_document`, `tilt_left`, `tilt_right`, `tilt_forward`, `tilt_back` | `center_face`, `close_eyes`, `turn_left`, `turn_right`, `smile`, `look_up`, `look_down` |
+
+The image map key for each image is `{step}_{challenge}`, e.g.:
+- `recto_center_document`
+- `recto_tilt_left`
+- `selfie_center_face`
+- `selfie_turn_right`
+
+---
+
+## Supported document targets
+
+| Value                 | Document                        |
+|-----------------------|---------------------------------|
+| `SN-CIN`              | Carte d'Identité Nationale (SN) |
+| `SN-PASSPORT`         | Passeport sénégalais            |
+| `SN-DRIVER-LICENCE`   | Permis de conduire (SN)         |
+
+Custom target strings are also accepted.
+
+---
+
+## License
+
+MIT

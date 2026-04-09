@@ -141,8 +141,42 @@ if (!valid) {
 | `versoChallengeMode(ChallengeMode)` | `ChallengeMode` | — | Override for verso step |
 | `requireFaceMatch(boolean)` | `boolean` | `false` | Cross-step face match |
 | `kycIdentifier(String)` | `String` | — | Caller correlation ID |
-| `addImage(String, String)` | key, filePath | required | Image to submit |
+| `addImage(String, String)` | key, value | required | Image to submit (path / URL / base64 / data URI) |
 | `images(Map<String,String>)` | map | — | Replace entire image map |
+| `addImageBytes(String, byte[])` | key, data | — | Submit raw image bytes |
+| `imageBytes(Map<String,byte[]>)` | map | — | Replace entire raw-bytes image map |
+
+### Image input formats
+
+Each value in `addImage()` is resolved in this order:
+
+| Priority | Format | Example |
+|----------|--------|---------|
+| 1 | **URL** (`http://` / `https://`) | `"https://cdn.example.com/recto.jpg"` |
+| 2 | **Data URI** (`data:image/…;base64,…`) | `"data:image/jpeg;base64,/9j/4AA…"` |
+| 3 | **Base64 string** (long, no path separator) | `Base64.getEncoder().encodeToString(data)` |
+| 4 | **File path** (default) | `"/path/to/recto.jpg"` |
+
+For raw bytes already in memory, use `addImageBytes()`:
+
+```java
+// File path (original behaviour — unchanged)
+.addImage("recto_center_document", "/path/to/recto.jpg")
+
+// Raw bytes
+byte[] rectoBytes = Files.readAllBytes(Paths.get("/path/to/recto.jpg"));
+.addImageBytes("recto_center_document", rectoBytes)
+
+// URL — downloaded automatically
+.addImage("recto_center_document", "https://cdn.example.com/recto.jpg")
+
+// Data URI
+String b64 = Base64.getEncoder().encodeToString(rectoBytes);
+.addImage("recto_center_document", "data:image/jpeg;base64," + b64)
+
+// Bare base64 string
+.addImage("recto_center_document", b64)
+```
 
 ### Image key format
 

@@ -25,12 +25,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,10 +232,24 @@ func (c *Client) Verify(ctx context.Context, opts *VerifyOptions) (*KycResponse,
 		}
 	}
 
-	// ── Image files ───────────────────────────────────────────────────────────
+	// ── Image files (file path / URL / base64 / data URI) ────────────────────
 
-	for fieldName, filePath := range opts.Images {
-		if err := attachFile(mw, fieldName, filePath); err != nil {
+	for fieldName, value := range opts.Images {
+		data, err := resolveImage(value)
+		if err != nil {
+			return nil, fmt.Errorf("kyvshield: resolve image for field %q: %w", fieldName, err)
+		}
+		filename := deriveFilename(value, fieldName)
+		if err := attachBytes(mw, fieldName, filename, data); err != nil {
+			return nil, err
+		}
+	}
+
+	// ── Raw-bytes image map ───────────────────────────────────────────────────
+
+	for fieldName, data := range opts.ImageBytes {
+		filename := fieldName + ".jpg"
+		if err := attachBytes(mw, fieldName, filename, data); err != nil {
 			return nil, err
 		}
 	}
@@ -341,7 +357,108 @@ func (c *Client) setAuthHeader(req *http.Request) {
 	req.Header.Set("X-API-Key", c.apiKey)
 }
 
+// resolveImage converts a string value to raw image bytes.
+//
+// Resolution order:
+//  1. "http://" / "https://"  → downloaded via http.Get with a 30-second timeout
+//  2. "data:image/" prefix    → data URI; base64 portion after ',' is decoded
+//  3. long string, no path sep, no extension → treated as raw base64
+//  4. otherwise               → treated as a filesystem path
+func resolveImage(value string) ([]byte, error) {
+	// 1. URL
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Get(value)
+		if err != nil {
+			return nil, fmt.Errorf("download image from URL %q: %w", value, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("download image from URL %q: HTTP %d", value, resp.StatusCode)
+		}
+		return io.ReadAll(resp.Body)
+	}
+
+	// 2. Data URI
+	if strings.HasPrefix(value, "data:image/") {
+		commaIdx := strings.Index(value, ",")
+		if commaIdx == -1 {
+			return nil, fmt.Errorf("invalid data URI for image")
+		}
+		return base64.StdEncoding.DecodeString(value[commaIdx+1:])
+	}
+
+	// 3. Bare base64 (no path separators, length > 64, no file extension)
+	if !strings.ContainsAny(value, "/\\") && len(value) > 64 {
+		ext := filepath.Ext(value)
+		if ext == "" || len(ext) > 5 {
+			decoded, err := base64.StdEncoding.DecodeString(value)
+			if err == nil {
+				return decoded, nil
+			}
+			// Fall back to RawStdEncoding (no padding)
+			decoded, err = base64.RawStdEncoding.DecodeString(value)
+			if err == nil {
+				return decoded, nil
+			}
+		}
+	}
+
+	// 4. Filesystem path
+	return os.ReadFile(value)
+}
+
+// deriveFilename returns a sensible filename for the multipart content-disposition.
+func deriveFilename(value, fieldName string) string {
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		if u, err := url.Parse(value); err == nil {
+			seg := filepath.Base(u.Path)
+			if seg != "" && seg != "." && seg != "/" {
+				return seg
+			}
+		}
+		return fieldName + ".jpg"
+	}
+	if strings.HasPrefix(value, "data:image/") ||
+		(!strings.ContainsAny(value, "/\\") && len(value) > 64 && filepath.Ext(value) == "") {
+		return fieldName + ".jpg"
+	}
+	return filepath.Base(value)
+}
+
+// attachBytes writes raw image bytes as a multipart file field.
+func attachBytes(mw *multipart.Writer, fieldName, filename string, data []byte) error {
+	contentType := mimeTypeFromBytes(data)
+
+	h := make(map[string][]string)
+	h["Content-Disposition"] = []string{
+		fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename),
+	}
+	h["Content-Type"] = []string{contentType}
+
+	part, err := mw.CreatePart(h)
+	if err != nil {
+		return fmt.Errorf("kyvshield: create multipart part for field %q: %w", fieldName, err)
+	}
+	_, err = part.Write(data)
+	return err
+}
+
+// mimeTypeFromBytes infers the MIME type from the first bytes of image data.
+func mimeTypeFromBytes(data []byte) string {
+	if len(data) >= 4 {
+		if data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' {
+			return "image/png"
+		}
+		if data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' {
+			return "image/webp"
+		}
+	}
+	return "image/jpeg"
+}
+
 // attachFile opens a local file and writes it as a multipart file field.
+// Kept for internal use where we already know we have a plain path.
 // The content-type is inferred from the file extension (.jpg/.jpeg → image/jpeg,
 // .png → image/png, everything else → application/octet-stream).
 func attachFile(mw *multipart.Writer, fieldName, filePath string) error {

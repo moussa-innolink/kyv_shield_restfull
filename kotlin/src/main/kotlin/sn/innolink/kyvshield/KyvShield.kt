@@ -11,6 +11,7 @@ import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Duration
+import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import javax.crypto.Mac
@@ -245,24 +246,24 @@ class KyvShield(
             out.write(crlf.toByteArray())
         }
 
-        fun writeFileField(name: String, filePath: String) {
-            val file = File(filePath)
-            if (!file.exists() || !file.isFile) {
-                throw KyvShieldException(
-                    message = "Image file not found or not a file: $filePath (field: $name)",
-                    errorCode = "FILE_NOT_FOUND",
-                )
+        fun writeImageField(name: String, value: Any) {
+            val bytes = resolveImage(value)
+            val filename = when {
+                value is String && (value.startsWith("http://") || value.startsWith("https://")) -> {
+                    val path = runCatching { URI.create(value).path }.getOrNull() ?: ""
+                    val seg = path.substringAfterLast('/')
+                    seg.ifEmpty { "$name.jpg" }
+                }
+                value is String && !value.startsWith("data:image/")
+                        && (value.contains('/') || value.contains('\\') || value.matches(Regex(".*\\.\\w{2,5}$"))) -> {
+                    File(value).name
+                }
+                else -> "$name.jpg"
             }
-            val bytes = file.readBytes()
-            val mimeType = when {
-                filePath.lowercase().endsWith(".png")  -> "image/png"
-                filePath.lowercase().endsWith(".webp") -> "image/webp"
-                filePath.lowercase().endsWith(".gif")  -> "image/gif"
-                else -> "image/jpeg"
-            }
+            val mimeType = inferMimeTypeFromBytes(bytes)
             out.write("$dash$boundary$crlf".toByteArray())
             out.write(
-                "Content-Disposition: form-data; name=\"$name\"; filename=\"${file.name}\"$crlf".toByteArray()
+                "Content-Disposition: form-data; name=\"$name\"; filename=\"$filename\"$crlf".toByteArray()
             )
             out.write("Content-Type: $mimeType$crlf$crlf".toByteArray())
             out.write(bytes)
@@ -295,15 +296,82 @@ class KyvShield(
         // kyc_identifier (optional)
         options.kycIdentifier?.let { writeField("kyc_identifier", it) }
 
-        // image files
-        options.images.forEach { (fieldName, filePath) ->
-            writeFileField(fieldName, filePath)
+        // image files (any of: ByteArray, URL, data URI, base64, or file path)
+        options.images.forEach { (fieldName, value) ->
+            writeImageField(fieldName, value)
         }
 
         // terminal boundary
         out.write("$dash$boundary$dash$crlf".toByteArray())
 
         return out.toByteArray()
+    }
+
+    /**
+     * Resolves an image value ([ByteArray], URL string, data URI, bare base64,
+     * or filesystem path) into raw bytes.
+     */
+    private fun resolveImage(value: Any): ByteArray {
+        // 1. Already raw bytes
+        if (value is ByteArray) return value
+
+        val str = value as? String
+            ?: throw KyvShieldException(message = "Image value must be a String or ByteArray, got ${value::class.simpleName}")
+
+        // 2. URL — fetch via HttpClient
+        if (str.startsWith("http://") || str.startsWith("https://")) {
+            val req = HttpRequest.newBuilder()
+                .uri(URI.create(str))
+                .GET()
+                .timeout(Duration.ofSeconds(30))
+                .build()
+            val res = try {
+                http.send(req, HttpResponse.BodyHandlers.ofByteArray())
+            } catch (e: Exception) {
+                throw KyvShieldException(message = "Failed to download image from \"$str\": ${e.message}", cause = e)
+            }
+            if (res.statusCode() !in 200..299) {
+                throw KyvShieldException(
+                    message = "Failed to download image from \"$str\": HTTP ${res.statusCode()}",
+                    statusCode = res.statusCode(),
+                )
+            }
+            return res.body()
+        }
+
+        // 3. Data URI
+        if (str.startsWith("data:image/")) {
+            val commaIdx = str.indexOf(',')
+            if (commaIdx == -1) throw KyvShieldException(message = "Invalid data URI for image")
+            return Base64.getDecoder().decode(str.substring(commaIdx + 1))
+        }
+
+        // 4. Bare base64 (no path separators, long, no extension)
+        if (!str.contains('/') && !str.contains('\\')
+            && str.length > 64 && !str.matches(Regex(".*\\.\\w{2,5}$"))) {
+            return Base64.getDecoder().decode(str)
+        }
+
+        // 5. Filesystem path
+        val file = File(str)
+        if (!file.exists() || !file.isFile) {
+            throw KyvShieldException(
+                message = "Image file not found or not a file: $str",
+                errorCode = "FILE_NOT_FOUND",
+            )
+        }
+        return file.readBytes()
+    }
+
+    /** Infers a MIME type by inspecting the first bytes of the image data. */
+    private fun inferMimeTypeFromBytes(bytes: ByteArray): String {
+        if (bytes.size >= 4) {
+            if (bytes[0] == 0x89.toByte() && bytes[1] == 'P'.code.toByte()
+                && bytes[2] == 'N'.code.toByte() && bytes[3] == 'G'.code.toByte()) return "image/png"
+            if (bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte()
+                && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()) return "image/webp"
+        }
+        return "image/jpeg"
     }
 
     /** Generates a unique MIME multipart boundary string. */

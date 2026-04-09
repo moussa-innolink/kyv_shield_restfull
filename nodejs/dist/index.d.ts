@@ -110,6 +110,16 @@ export declare class KyvShield {
      */
     verify(options: VerifyOptions): Promise<KycResponse>;
     /**
+     * Submit multiple KYC verification requests concurrently.
+     * All requests run in parallel; results are settled (fulfilled or rejected).
+     *
+     * @param optionsList - Array of VerifyOptions (max 10 entries).
+     * @returns Array of PromiseSettledResult in the same order as the input.
+     *
+     * @throws {@link KyvShieldError} if the batch size exceeds 10.
+     */
+    verifyBatch(optionsList: VerifyOptions[]): Promise<PromiseSettledResult<KycResponse>[]>;
+    /**
      * Verify an incoming webhook signature.
      *
      * KyvShield signs webhook payloads with HMAC-SHA256 using your API key.
@@ -143,14 +153,28 @@ export declare class KyvShield {
     /**
      * Validate required fields in {@link VerifyOptions} before sending.
      * Throws a descriptive {@link KyvShieldError} on the first problem found.
+     * Note: file-path existence is only checked for plain path strings (not URLs,
+     * base64, or Buffers — those are validated/fetched at send time).
      */
     private validateVerifyOptions;
     /**
-     * Build the `multipart/form-data` body from {@link VerifyOptions}.
+     * Resolve an image value (Buffer, URL, data URI, base64, or file path)
+     * into raw bytes.
      *
-     * Text fields are appended first, followed by binary image fields.
+     * @param value - The image value from {@link VerifyOptions.images}.
+     * @returns A Buffer containing the image bytes.
      */
-    private buildFormData;
+    private resolveImage;
+    /**
+     * Build a native `multipart/form-data` body from {@link VerifyOptions}.
+     *
+     * Constructs the multipart body manually using `Buffer.concat` without any
+     * external dependency. Returns the binary body and the Content-Type header
+     * value (which includes the boundary).
+     *
+     * This method is async to support URL image downloads.
+     */
+    private buildMultipartBody;
     /**
      * Throw a {@link KyvShieldError} when the HTTP response is not successful (2xx).
      * Tries to parse JSON error details from the body when available.

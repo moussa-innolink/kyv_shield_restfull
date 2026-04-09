@@ -237,15 +237,20 @@ export interface VerifyOptions {
   kycIdentifier?: string;
 
   /**
-   * Map of image files to submit.
+   * Map of images to submit.
    * Keys follow the pattern `{step}_{challenge}`, e.g.:
    * - `'selfie_center_face'`
    * - `'recto_center_document'`
    * - `'recto_tilt_left'`
    *
-   * Values are absolute or relative file-system paths to JPEG/PNG images.
+   * Values can be one of four formats:
+   * - **Buffer** — raw image bytes, used directly
+   * - **`http://…` / `https://…`** — URL, the SDK downloads automatically
+   * - **`data:image/…;base64,…`** — data URI, the SDK strips the prefix and decodes
+   * - **base64 string** — long string without path separators, decoded as base64
+   * - **file path** — any other string is treated as a local filesystem path
    */
-  images: Record<string, string>;
+  images: Record<string, string | Buffer>;
 }
 
 // ─── Error ────────────────────────────────────────────────────────────────────

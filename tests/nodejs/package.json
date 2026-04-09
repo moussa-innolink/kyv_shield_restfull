@@ -1,0 +1,8 @@
+{
+  "name": "kyvshield-rest-sdk-test",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@kyvshield/rest-sdk": "^1.0.1"
+  }
+}

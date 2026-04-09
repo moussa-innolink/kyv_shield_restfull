@@ -162,7 +162,7 @@ export class KyvShield {
   async verify(options: VerifyOptions): Promise<KycResponse> {
     this.validateVerifyOptions(options);
 
-    const { body, contentType } = this.buildMultipartBody(options);
+    const { body, contentType } = await this.buildMultipartBody(options);
     const url = `${this.baseUrl}${API_VERSION}/kyc/verify`;
 
     const response = await fetch(url, {
@@ -264,6 +264,8 @@ export class KyvShield {
   /**
    * Validate required fields in {@link VerifyOptions} before sending.
    * Throws a descriptive {@link KyvShieldError} on the first problem found.
+   * Note: file-path existence is only checked for plain path strings (not URLs,
+   * base64, or Buffers — those are validated/fetched at send time).
    */
   private validateVerifyOptions(options: VerifyOptions): void {
     if (!options.steps || options.steps.length === 0) {
@@ -276,9 +278,15 @@ export class KyvShield {
       throw new KyvShieldError('VerifyOptions.images must contain at least one entry');
     }
 
-    // Validate that all image files exist on disk
-    for (const [key, filePath] of Object.entries(options.images)) {
-      const resolved = path.resolve(filePath);
+    // Only validate file existence for plain filesystem paths
+    for (const [key, value] of Object.entries(options.images)) {
+      if (Buffer.isBuffer(value)) continue;
+      if (value.startsWith('http://') || value.startsWith('https://')) continue;
+      if (value.startsWith('data:image/')) continue;
+      // Check if it looks like a base64 string (no path separator, long, no extension)
+      if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value)) continue;
+
+      const resolved = path.resolve(value);
       if (!fs.existsSync(resolved)) {
         throw new KyvShieldError(
           `Image file for "${key}" not found: ${resolved}`,
@@ -288,13 +296,62 @@ export class KyvShield {
   }
 
   /**
+   * Resolve an image value (Buffer, URL, data URI, base64, or file path)
+   * into raw bytes.
+   *
+   * @param value - The image value from {@link VerifyOptions.images}.
+   * @returns A Buffer containing the image bytes.
+   */
+  private async resolveImage(value: string | Buffer): Promise<Buffer> {
+    // 1. Already raw bytes
+    if (Buffer.isBuffer(value)) {
+      return value;
+    }
+
+    // 2. URL — download with a 30-second timeout
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      const response = await fetch(value, {
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) {
+        throw new KyvShieldError(
+          `Failed to download image from URL "${value}": HTTP ${response.status}`,
+        );
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    // 3. Data URI — strip prefix and decode base64
+    if (value.startsWith('data:image/')) {
+      const commaIndex = value.indexOf(',');
+      if (commaIndex === -1) {
+        throw new KyvShieldError(`Invalid data URI for image: "${value.slice(0, 40)}..."`);
+      }
+      const b64 = value.slice(commaIndex + 1);
+      return Buffer.from(b64, 'base64');
+    }
+
+    // 4. Base64 string (no path separators, long, no file extension)
+    if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value)) {
+      return Buffer.from(value, 'base64');
+    }
+
+    // 5. File path
+    const resolved = path.resolve(value);
+    return fs.readFileSync(resolved);
+  }
+
+  /**
    * Build a native `multipart/form-data` body from {@link VerifyOptions}.
    *
    * Constructs the multipart body manually using `Buffer.concat` without any
    * external dependency. Returns the binary body and the Content-Type header
    * value (which includes the boundary).
+   *
+   * This method is async to support URL image downloads.
    */
-  private buildMultipartBody(options: VerifyOptions): { body: Buffer; contentType: string } {
+  private async buildMultipartBody(options: VerifyOptions): Promise<{ body: Buffer; contentType: string }> {
     const boundary = crypto.randomUUID().replace(/-/g, '');
     const CRLF = '\r\n';
     const parts: Buffer[] = [];
@@ -335,12 +392,16 @@ export class KyvShield {
       parts.push(textPart('kyc_identifier', options.kycIdentifier));
     }
 
-    // ── Image files ─────────────────────────────────────────────────────────
+    // ── Image files (resolve all formats) ───────────────────────────────────
 
-    for (const [key, filePath] of Object.entries(options.images)) {
-      const resolved = path.resolve(filePath);
-      const data = fs.readFileSync(resolved);
-      const filename = path.basename(resolved);
+    for (const [key, value] of Object.entries(options.images)) {
+      const data = await this.resolveImage(value);
+      // Determine a sensible filename for the multipart field
+      let filename = 'image.jpg';
+      if (!Buffer.isBuffer(value) && !value.startsWith('data:image/') && !value.startsWith('http')) {
+        // Plain path — use the basename
+        filename = path.basename(value.includes('/') || value.includes('\\') ? value : key + '.jpg');
+      }
       const mimeType = this.guessMimeType(filename);
       parts.push(filePart(key, filename, mimeType, data));
     }

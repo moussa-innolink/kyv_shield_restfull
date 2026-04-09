@@ -133,7 +133,46 @@ http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
 | `StepChallengeModes` | `map[string]string` | Per-step overrides, e.g. `{"recto_challenge_mode": "strict"}` |
 | `RequireFaceMatch` | `bool` | Cross-step face match between selfie and document photo |
 | `KycIdentifier` | `string` | Optional caller-provided correlation ID |
-| `Images` | `map[string]string` | `{field_name: /absolute/path/to/image.jpg}` |
+| `Images` | `map[string]string` | Image map — values can be file paths, URLs, data URIs, or base64 strings |
+| `ImageBytes` | `map[string][]byte` | Image map for raw bytes already in memory |
+
+**Image input formats** — each value in `Images` is resolved in this order:
+
+| Priority | Format | Example |
+|----------|--------|---------|
+| 1 | **URL** (`http://`/`https://`) | `"https://cdn.example.com/recto.jpg"` |
+| 2 | **Data URI** (`data:image/…;base64,…`) | `"data:image/jpeg;base64,/9j/4AA…"` |
+| 3 | **Base64 string** (long, no path separator) | `base64.StdEncoding.EncodeToString(data)` |
+| 4 | **File path** (default) | `"/path/to/recto.jpg"` |
+
+For raw bytes already in memory, use `ImageBytes` instead:
+
+```go
+// File paths (original behaviour — unchanged)
+Images: map[string]string{
+    "recto_center_document": "/path/to/recto.jpg",
+},
+
+// Raw bytes in memory
+ImageBytes: map[string][]byte{
+    "recto_center_document": rectoBytes,
+},
+
+// URL — downloaded automatically
+Images: map[string]string{
+    "recto_center_document": "https://cdn.example.com/recto.jpg",
+},
+
+// Data URI
+Images: map[string]string{
+    "recto_center_document": "data:image/jpeg;base64," + base64Str,
+},
+
+// Bare base64 string
+Images: map[string]string{
+    "recto_center_document": base64.StdEncoding.EncodeToString(rectoBytes),
+},
+```
 
 **Image field names** follow the pattern `{step}_{challenge}`:
 

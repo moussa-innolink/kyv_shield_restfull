@@ -88,7 +88,7 @@ const { challenges } = await kyv.getChallenges();
 
 ### `kyv.verify(options)`
 
-Submit a KYC verification request. Reads image files from disk and sends them as multipart form data.
+Submit a KYC verification request. Images can be provided in any of four formats — see [Image input formats](#image-input-formats) for details.
 
 ```typescript
 const result = await kyv.verify({
@@ -103,6 +103,50 @@ const result = await kyv.verify({
     recto_center_document: './recto.jpg',
   },
 });
+```
+
+---
+
+## Image input formats
+
+Each value in the `images` map is resolved automatically in this order:
+
+| Priority | Format | Example |
+|----------|--------|---------|
+| 1 | **Buffer** (raw bytes) | `Buffer.from(fs.readFileSync('./recto.jpg'))` |
+| 2 | **URL** (`http://` / `https://`) | `'https://example.com/recto.jpg'` |
+| 3 | **Data URI** (`data:image/…;base64,…`) | `'data:image/jpeg;base64,/9j/4AA…'` |
+| 4 | **Base64 string** (long, no path separators) | `'<base64 data>'` |
+| 5 | **File path** (default) | `'./recto.jpg'` or `/abs/path/recto.jpg` |
+
+```typescript
+import { readFileSync } from 'node:fs';
+
+// 1. Raw Buffer
+images: {
+  recto_center_document: readFileSync('./recto.jpg'),  // Buffer
+}
+
+// 2. URL — downloaded with a 30-second timeout
+images: {
+  recto_center_document: 'https://cdn.example.com/recto.jpg',
+}
+
+// 3. Data URI
+images: {
+  recto_center_document: 'data:image/jpeg;base64,/9j/4AAQSkZJRg…',
+}
+
+// 4. Bare base64 string
+const b64 = readFileSync('./recto.jpg').toString('base64');
+images: {
+  recto_center_document: b64,
+}
+
+// 5. File path (original behaviour — unchanged)
+images: {
+  recto_center_document: './recto.jpg',
+}
 ```
 
 **Options:** [`VerifyOptions`](#verifyoptions)
@@ -179,9 +223,15 @@ interface VerifyOptions {
   /**
    * Map of images to submit.
    * Key format: `{step}_{challenge}`, e.g. 'recto_center_document'
-   * Value: path to the image file on disk.
+   *
+   * Each value can be one of **four formats** (auto-detected):
+   * - `Buffer`                            — raw bytes, used directly
+   * - `'https://…'` / `'http://…'`        — URL, downloaded automatically (30s timeout)
+   * - `'data:image/jpeg;base64,…'`        — data URI, base64 decoded
+   * - long base64 string (no path sep.)   — decoded as base64
+   * - any other string                    — treated as a filesystem path
    */
-  images: Record<string, string>;
+  images: Record<string, string | Buffer>;
 }
 ```
 

@@ -128,6 +128,31 @@ $resp->getChallenges('document', 'standard'); // string[]
 | `kycIdentifier` | `string\|null` | no | Caller-side identifier stored in session |
 | `images` | `array<string,string>` | yes | `['recto_center_document' => '/path.jpg']` |
 
+#### Image input formats
+
+Each value in the `images` array can be one of **four formats** (auto-detected):
+
+| Priority | Format | Example |
+|----------|--------|---------|
+| 1 | **URL** (`http://` / `https://`) | `'https://cdn.example.com/recto.jpg'` |
+| 2 | **Data URI** (`data:image/…;base64,…`) | `'data:image/jpeg;base64,/9j/4AA…'` |
+| 3 | **Base64 string** (long, no path separator) | `base64_encode(file_get_contents($path))` |
+| 4 | **File path** (default) | `'/path/to/recto.jpg'` |
+
+```php
+// 1. URL — downloaded automatically with curl
+'recto_center_document' => 'https://cdn.example.com/recto.jpg',
+
+// 2. Data URI
+'recto_center_document' => 'data:image/jpeg;base64,' . base64_encode(file_get_contents($path)),
+
+// 3. Bare base64 string
+'recto_center_document' => base64_encode(file_get_contents($path)),
+
+// 4. File path (original behaviour — unchanged)
+'recto_center_document' => '/path/to/recto.jpg',
+```
+
 #### Image field naming convention
 
 Image keys follow `{step}_{challenge}`, e.g.:

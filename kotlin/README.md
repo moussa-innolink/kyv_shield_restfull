@@ -132,7 +132,47 @@ Runs the full KYC pipeline synchronously and returns a structured result.
 | `stepChallengeModes` | `Map<String, ChallengeMode>?` | no | Per-step overrides, e.g. `mapOf("selfie" to ChallengeMode.MINIMAL)` |
 | `requireFaceMatch` | `Boolean` | no (default `false`) | Cross-step selfie ↔ document face match |
 | `kycIdentifier` | `String?` | no | Caller-provided correlation ID |
-| `images` | `Map<String, String>` | yes | `{step}_{challenge}` → absolute file path |
+| `images` | `Map<String, Any>` | yes | `{step}_{challenge}` → image value (see below) |
+
+#### Image input formats
+
+Each value in the `images` map is resolved automatically. Accepted types:
+
+| Priority | Type / Format | Example |
+|----------|---------------|---------|
+| 1 | **ByteArray** (raw bytes) | `File("/path/to/recto.jpg").readBytes()` |
+| 2 | **URL string** (`http://`/`https://`) | `"https://cdn.example.com/recto.jpg"` |
+| 3 | **Data URI** (`data:image/…;base64,…`) | `"data:image/jpeg;base64,/9j/4AA…"` |
+| 4 | **Base64 string** (long, no path sep.) | `Base64.getEncoder().encodeToString(bytes)` |
+| 5 | **File path** (default) | `"/path/to/recto.jpg"` |
+
+```kotlin
+// 1. Raw bytes
+images = mapOf(
+    "recto_center_document" to File("/path/to/recto.jpg").readBytes(),
+)
+
+// 2. URL — downloaded automatically
+images = mapOf(
+    "recto_center_document" to "https://cdn.example.com/recto.jpg",
+)
+
+// 3. Data URI
+val b64 = Base64.getEncoder().encodeToString(File("/path/to/recto.jpg").readBytes())
+images = mapOf(
+    "recto_center_document" to "data:image/jpeg;base64,$b64",
+)
+
+// 4. Base64 string
+images = mapOf(
+    "recto_center_document" to b64,
+)
+
+// 5. File path (original behaviour — unchanged)
+images = mapOf(
+    "recto_center_document" to "/path/to/recto.jpg",
+)
+```
 
 #### Image key format
 
