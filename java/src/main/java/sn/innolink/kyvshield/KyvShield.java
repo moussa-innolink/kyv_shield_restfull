@@ -8,6 +8,16 @@ import sn.innolink.kyvshield.model.VerifyOptions;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -20,10 +30,15 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import sn.innolink.kyvshield.model.BatchResult;
 
@@ -61,14 +76,29 @@ public final class KyvShield {
     /** Default production base URL. */
     public static final String DEFAULT_BASE_URL = "https://kyvshield-naruto.innolinkcloud.com";
 
+    /** Default maximum image width in pixels before resize. */
+    public static final int DEFAULT_IMAGE_MAX_WIDTH = 1280;
+
+    /** Default JPEG compression quality (0–100). */
+    public static final int DEFAULT_IMAGE_QUALITY = 90;
+
+    /** Maximum number of images compressed in parallel. */
+    public static final int DEFAULT_MAX_CONCURRENT_COMPRESS = 20;
+
     private static final String CHALLENGES_PATH = "/api/v1/challenges";
     private static final String VERIFY_PATH     = "/api/v1/kyc/verify";
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
 
+    /** Logger used for all [KyvShield] tagged output. */
+    private static final Logger LOGGER = Logger.getLogger("KyvShield");
+
     private final String apiKey;
     private final String baseUrl;
     private final HttpClient httpClient;
+    private final int imageMaxWidth;
+    private final int imageQuality;
+    private final boolean enableLog;
 
     // ── Constructors ──────────────────────────────────────────────────────────
 
@@ -78,7 +108,7 @@ public final class KyvShield {
      * @param apiKey your KyvShield API key ({@code X-API-Key} header)
      */
     public KyvShield(String apiKey) {
-        this(apiKey, DEFAULT_BASE_URL);
+        this(apiKey, DEFAULT_BASE_URL, 1280, 90, true);
     }
 
     /**
@@ -89,6 +119,19 @@ public final class KyvShield {
      * @param baseUrl base URL without trailing slash, e.g. {@code "http://localhost:8080"}
      */
     public KyvShield(String apiKey, String baseUrl) {
+        this(apiKey, baseUrl, 1280, 90, true);
+    }
+
+    /**
+     * Creates a fully configured client.
+     *
+     * @param apiKey        your KyvShield API key
+     * @param baseUrl       base URL, e.g. {@code "http://localhost:8080"}
+     * @param imageMaxWidth maximum image width in pixels before resize (default: 1280)
+     * @param imageQuality  JPEG quality 0–100 (default: 90)
+     * @param enableLog     enable {@code [KyvShield]} tagged logging (default: true)
+     */
+    public KyvShield(String apiKey, String baseUrl, int imageMaxWidth, int imageQuality, boolean enableLog) {
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalArgumentException("apiKey must not be null or blank");
         }
@@ -98,9 +141,13 @@ public final class KyvShield {
         this.apiKey = apiKey;
         // Strip any trailing slash for consistency
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        this.imageMaxWidth = imageMaxWidth;
+        this.imageQuality  = imageQuality;
+        this.enableLog     = enableLog;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+        log("Initialized (baseUrl=" + this.baseUrl + ", imageMaxWidth=" + imageMaxWidth + ", imageQuality=" + imageQuality + ")");
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -114,6 +161,7 @@ public final class KyvShield {
      * @throws KyvShieldException if the request fails or the response cannot be parsed
      */
     public ChallengesResponse getChallenges() {
+        log("GET " + CHALLENGES_PATH + "...");
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + CHALLENGES_PATH))
                 .header("X-API-Key", apiKey)
@@ -124,7 +172,9 @@ public final class KyvShield {
 
         String body = executeRequest(request);
         try {
-            return ChallengesResponse.fromJson(new JSONObject(body));
+            ChallengesResponse result = ChallengesResponse.fromJson(new JSONObject(body));
+            log("Challenges loaded");
+            return result;
         } catch (Exception e) {
             throw new KyvShieldException("Failed to parse challenges response: " + e.getMessage(), e);
         }
@@ -142,6 +192,11 @@ public final class KyvShield {
      *                            or the response cannot be parsed
      */
     public KycResponse verify(VerifyOptions options) {
+        int imageCount = options.getImages().size() + options.getImageBytes().size();
+        String stepsStr = options.getSteps().stream().map(Step::getValue).collect(Collectors.joining(","));
+        log("POST " + VERIFY_PATH + " (steps=[" + stepsStr + "], target=" + options.getTarget() + ", images=" + imageCount + ")");
+        long startMs = System.currentTimeMillis();
+
         String boundary = "KyvShield-" + UUID.randomUUID().toString().replace("-", "");
 
         byte[] body = buildMultipartBody(options, boundary);
@@ -157,7 +212,10 @@ public final class KyvShield {
 
         String responseBody = executeRequest(request);
         try {
-            return KycResponse.fromJson(new JSONObject(responseBody));
+            KycResponse result = KycResponse.fromJson(new JSONObject(responseBody));
+            long elapsed = System.currentTimeMillis() - startMs;
+            log("Verify complete: " + result.getOverallStatus() + " in " + elapsed + "ms");
+            return result;
         } catch (Exception e) {
             throw new KyvShieldException(
                     "Failed to parse KYC verify response: " + e.getMessage(), e);
@@ -181,23 +239,36 @@ public final class KyvShield {
         if (optionsList.size() > 10) {
             throw new KyvShieldException("Batch size cannot exceed 10");
         }
+        log("Batch verify: " + optionsList.size() + " requests...");
 
-        List<CompletableFuture<BatchResult>> futures = optionsList.stream()
-                .map(opts -> CompletableFuture.supplyAsync(() -> {
-                    try {
-                        KycResponse result = verify(opts);
-                        return new BatchResult(true, result, null);
-                    } catch (Exception e) {
-                        return new BatchResult(false, null, e.getMessage());
-                    }
-                }))
-                .collect(Collectors.toList());
+        ExecutorService executor = Executors.newFixedThreadPool(
+                Math.max(optionsList.size(), 1));
+        try {
+            List<CompletableFuture<BatchResult>> futures = optionsList.stream()
+                    .map(opts -> CompletableFuture.supplyAsync(() -> {
+                        try {
+                            KycResponse result = verify(opts);
+                            return new BatchResult(true, result, null);
+                        } catch (Exception e) {
+                            return new BatchResult(false, null, e.getMessage());
+                        }
+                    }, executor))
+                    .collect(Collectors.toList());
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        return futures.stream()
-                .map(f -> f.join())
-                .collect(Collectors.toList());
+            List<BatchResult> results = futures.stream()
+                    .map(CompletableFuture::join)
+                    .collect(Collectors.toList());
+
+            long passed = results.stream().filter(BatchResult::isSuccess).count();
+            long rejected = results.size() - passed;
+            log("Batch complete: " + passed + " pass, " + rejected + " reject");
+
+            return results;
+        } finally {
+            executor.shutdown();
+        }
     }
 
     // ── Webhook Signature Verification ────────────────────────────────────────
@@ -249,6 +320,92 @@ public final class KyvShield {
     }
 
     // ── Private Helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Tagged logger. Logs to {@code System.out} when {@code enableLog} is {@code true}.
+     * All messages are prefixed with {@code [KyvShield]}.
+     */
+    private void log(String message) {
+        if (enableLog) {
+            System.out.println("[KyvShield] " + message);
+        }
+    }
+
+    /**
+     * Resize and compress an image using standard Java2D / ImageIO (no external deps).
+     *
+     * <p>If the image width exceeds {@code imageMaxWidth}, the image is scaled down
+     * maintaining the aspect ratio. The result is always re-encoded as JPEG at
+     * {@code imageQuality} / 100.
+     *
+     * @param data   raw image bytes
+     * @param label  field name used in log messages
+     * @return processed image bytes, or the original bytes if processing fails
+     */
+    private byte[] processImage(byte[] data, String label) {
+        int originalKb = data.length / 1024;
+        try {
+            BufferedImage src = ImageIO.read(new ByteArrayInputStream(data));
+            if (src == null) {
+                log("Image " + label + ": could not decode for processing — using original (" + originalKb + "KB)");
+                return data;
+            }
+
+            int origWidth  = src.getWidth();
+            int origHeight = src.getHeight();
+            BufferedImage toEncode;
+
+            if (origWidth > imageMaxWidth) {
+                int newWidth  = imageMaxWidth;
+                int newHeight = (int) Math.round((double) origHeight * newWidth / origWidth);
+                BufferedImage dst = new BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB);
+                Graphics2D g2d = dst.createGraphics();
+                g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                g2d.drawImage(src, 0, 0, newWidth, newHeight, null);
+                g2d.dispose();
+                toEncode = dst;
+            } else {
+                // No resize needed — convert to RGB for JPEG encoding
+                if (src.getType() != BufferedImage.TYPE_INT_RGB) {
+                    BufferedImage rgb = new BufferedImage(origWidth, origHeight, BufferedImage.TYPE_INT_RGB);
+                    Graphics2D g2d = rgb.createGraphics();
+                    g2d.drawImage(src, 0, 0, null);
+                    g2d.dispose();
+                    toEncode = rgb;
+                } else {
+                    toEncode = src;
+                }
+            }
+
+            // Encode as JPEG with quality parameter
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+            if (!writers.hasNext()) {
+                log("Image " + label + ": no JPEG writer found — using original");
+                return data;
+            }
+            ImageWriter writer = writers.next();
+            ImageWriteParam param = writer.getDefaultWriteParam();
+            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            param.setCompressionQuality(imageQuality / 100.0f);
+            writer.setOutput(new MemoryCacheImageOutputStream(baos));
+            writer.write(null, new IIOImage(toEncode, null, null), param);
+            writer.dispose();
+
+            byte[] result = baos.toByteArray();
+            int finalKb = result.length / 1024;
+
+            if (origWidth > imageMaxWidth) {
+                log("Image " + label + ": " + originalKb + "KB → resized " + imageMaxWidth + "px → compressed " + imageQuality + "% → " + finalKb + "KB");
+            } else {
+                log("Image " + label + ": " + originalKb + "KB → compressed " + imageQuality + "% → " + finalKb + "KB");
+            }
+            return result;
+        } catch (Exception e) {
+            log("Image " + label + ": processing failed (" + e.getMessage() + ") — using original");
+            return data;
+        }
+    }
 
     /**
      * Executes an HTTP request and returns the response body as a string.
@@ -339,31 +496,56 @@ public final class KyvShield {
         }
 
         // ── Image files (string: path / URL / base64 / data URI) ─────────────
+        // Compress in parallel (max DEFAULT_MAX_CONCURRENT_COMPRESS concurrent)
 
-        for (Map.Entry<String, String> entry : options.getImages().entrySet()) {
-            String fieldName = entry.getKey();
-            String value     = entry.getValue();
-
-            byte[] imageBytes = resolveImage(value);
-            String filename   = deriveFilename(value, fieldName);
-            String contentType = inferContentType(filename);
-
-            String header = dashBoundary
-                    + "Content-Disposition: form-data; name=\"" + fieldName
-                    + "\"; filename=\"" + filename + "\"" + crlf
-                    + "Content-Type: " + contentType + crlf
-                    + crlf;
-
-            parts.add(concat(header.getBytes(StandardCharsets.UTF_8),
-                    imageBytes,
-                    crlf.getBytes(StandardCharsets.UTF_8)));
+        if (!options.getImages().isEmpty()) {
+            List<Map.Entry<String, String>> imageEntries = new ArrayList<>(options.getImages().entrySet());
+            ExecutorService compressPool = Executors.newFixedThreadPool(
+                    Math.min(imageEntries.size(), DEFAULT_MAX_CONCURRENT_COMPRESS));
+            Semaphore sem = new Semaphore(DEFAULT_MAX_CONCURRENT_COMPRESS);
+            try {
+                List<CompletableFuture<byte[]>> imgFutures = imageEntries.stream()
+                        .map(entry -> CompletableFuture.supplyAsync(() -> {
+                            try {
+                                sem.acquire();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new KyvShieldException("Interrupted during image compression", e);
+                            }
+                            try {
+                                byte[] raw = resolveImage(entry.getValue(), entry.getKey());
+                                return processImage(raw, entry.getKey());
+                            } finally {
+                                sem.release();
+                            }
+                        }, compressPool))
+                        .collect(Collectors.toList());
+                CompletableFuture.allOf(imgFutures.toArray(new CompletableFuture[0])).join();
+                for (int i = 0; i < imageEntries.size(); i++) {
+                    String fieldName = imageEntries.get(i).getKey();
+                    String value = imageEntries.get(i).getValue();
+                    byte[] imageBytes = imgFutures.get(i).join();
+                    String filename = deriveFilename(value, fieldName);
+                    String contentType = inferContentType(filename);
+                    String header = dashBoundary
+                            + "Content-Disposition: form-data; name=\"" + fieldName
+                            + "\"; filename=\"" + filename + "\"" + crlf
+                            + "Content-Type: " + contentType + crlf
+                            + crlf;
+                    parts.add(concat(header.getBytes(StandardCharsets.UTF_8),
+                            imageBytes,
+                            crlf.getBytes(StandardCharsets.UTF_8)));
+                }
+            } finally {
+                compressPool.shutdown();
+            }
         }
 
         // ── Raw-bytes image map ───────────────────────────────────────────────
 
         for (Map.Entry<String, byte[]> entry : options.getImageBytes().entrySet()) {
             String fieldName = entry.getKey();
-            byte[] imageBytes = entry.getValue();
+            byte[] imageBytes = processImage(entry.getValue(), fieldName);
             String filename   = fieldName + ".jpg";
             String contentType = inferContentTypeFromBytes(imageBytes);
 
@@ -431,9 +613,10 @@ public final class KyvShield {
      *   <li>Filesystem path — read with {@link Files#readAllBytes}</li>
      * </ol>
      */
-    private byte[] resolveImage(String value) {
+    private byte[] resolveImage(String value, String label) {
         // 1. URL
         if (value.startsWith("http://") || value.startsWith("https://")) {
+            log("Downloading image from " + value);
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(value))
                     .GET()
@@ -461,13 +644,27 @@ public final class KyvShield {
                 throw new KyvShieldException("Invalid data URI for image");
             }
             String b64 = value.substring(commaIdx + 1);
-            return Base64.getDecoder().decode(b64);
+            int sizeKb = (int) (b64.length() * 0.75 / 1024);
+            log("Decoding base64 image " + label + " (" + sizeKb + "KB)");
+            try {
+                return Base64.getDecoder().decode(b64);
+            } catch (IllegalArgumentException e) {
+                throw new KyvShieldException(
+                        "Failed to decode base64 data URI for image \"" + label + "\": " + e.getMessage(), e);
+            }
         }
 
         // 3. Bare base64 (no path separators, long, no extension)
         if (!value.contains("/") && !value.contains("\\")
                 && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$")) {
-            return Base64.getDecoder().decode(value);
+            int sizeKb = (int) (value.length() * 0.75 / 1024);
+            log("Decoding base64 image " + label + " (" + sizeKb + "KB)");
+            try {
+                return Base64.getDecoder().decode(value);
+            } catch (IllegalArgumentException e) {
+                throw new KyvShieldException(
+                        "Failed to decode base64 image string for \"" + label + "\": " + e.getMessage(), e);
+            }
         }
 
         // 4. Filesystem path
@@ -534,16 +731,4 @@ public final class KyvShield {
         return sb.toString();
     }
 
-    /**
-     * Compares two strings in constant time to mitigate timing attacks.
-     * Returns {@code true} only when both strings are identical.
-     */
-    private static boolean timingSafeEquals(String a, String b) {
-        if (a.length() != b.length()) return false;
-        int diff = 0;
-        for (int i = 0; i < a.length(); i++) {
-            diff |= a.charAt(i) ^ b.charAt(i);
-        }
-        return diff == 0;
-    }
 }

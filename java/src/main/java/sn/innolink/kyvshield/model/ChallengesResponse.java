@@ -15,15 +15,24 @@ import java.util.List;
  */
 public final class ChallengesResponse {
 
+    private final boolean success;
     private final ChallengeModeMap document;
     private final ChallengeModeMap selfie;
 
-    private ChallengesResponse(ChallengeModeMap document, ChallengeModeMap selfie) {
+    private ChallengesResponse(boolean success, ChallengeModeMap document, ChallengeModeMap selfie) {
+        this.success  = success;
         this.document = document;
         this.selfie   = selfie;
     }
 
     // ── Getters ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns whether the API call succeeded.
+     */
+    public boolean isSuccess() {
+        return success;
+    }
 
     /**
      * Returns challenge identifiers grouped by mode for document steps
@@ -49,6 +58,8 @@ public final class ChallengesResponse {
      * @return parsed instance
      */
     public static ChallengesResponse fromJson(JSONObject json) {
+        boolean success = json.optBoolean("success", false);
+
         JSONObject challengesObj = json.optJSONObject("challenges");
         if (challengesObj == null) {
             // Tolerate a flat response structure
@@ -60,12 +71,12 @@ public final class ChallengesResponse {
         ChallengeModeMap selfie = ChallengeModeMap.fromJson(
                 challengesObj.optJSONObject("selfie"));
 
-        return new ChallengesResponse(document, selfie);
+        return new ChallengesResponse(success, document, selfie);
     }
 
     @Override
     public String toString() {
-        return "ChallengesResponse{document=" + document + ", selfie=" + selfie + '}';
+        return "ChallengesResponse{success=" + success + ", document=" + document + ", selfie=" + selfie + '}';
     }
 
     // ── Nested: ChallengeModeMap ──────────────────────────────────────────────

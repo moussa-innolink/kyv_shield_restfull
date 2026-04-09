@@ -135,6 +135,42 @@ export interface KycResponse {
     steps: StepResult[];
 }
 /**
+ * Options controlling image pre-processing before upload.
+ *
+ * Note: Node.js has no native image resize capability (no stdlib for it).
+ * If an image exceeds 1 MB, the SDK will emit a warning log.
+ * For guaranteed resize, pre-process images before passing them to the SDK.
+ */
+export interface ImageOptions {
+    /**
+     * Maximum image width in pixels. Images wider than this will trigger a
+     * warning log (actual resize is not supported in Node.js without external deps).
+     * @default 1280
+     */
+    maxWidth?: number;
+    /**
+     * JPEG quality 0–100. Reserved for future native image support.
+     * @default 90
+     */
+    jpegQuality?: number;
+}
+/**
+ * Constructor options for the KyvShield client.
+ */
+export interface KyvShieldOptions {
+    /**
+     * Image pre-processing settings.
+     * @default { maxWidth: DEFAULT_IMAGE_MAX_WIDTH, jpegQuality: DEFAULT_IMAGE_QUALITY }
+     */
+    imageOptions?: ImageOptions;
+    /**
+     * Enable tagged console logging for all SDK operations.
+     * All logs are prefixed with `[KyvShield]`.
+     * @default true
+     */
+    enableLog?: boolean;
+}
+/**
  * Options for KyvShield.verify().
  *
  * @example

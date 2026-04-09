@@ -258,6 +258,52 @@ Helper: `getChallenges(string $category, string $mode): string[]`
 
 ---
 
+### `verifyBatch(array $optionsList): array`
+
+Submit up to 10 KYC verifications in parallel using `curl_multi`. Temporary files created for each image are cleaned up automatically. PHP is single-threaded, so image compression within each call is sequential.
+
+```php
+use KyvShield\KyvShield;
+use KyvShield\VerifyOptions;
+
+$kyv = new KyvShield('your-api-key');
+
+$results = $kyv->verifyBatch([
+    new VerifyOptions(
+        steps:         ['recto', 'verso'],
+        target:        'SN-CIN',
+        language:      'fr',
+        challengeMode: 'standard',
+        kycIdentifier: 'user-001',
+        images: [
+            'recto_center_document' => '/path/to/user1_recto.jpg',
+            'verso_center_document' => '/path/to/user1_verso.jpg',
+        ],
+    ),
+    new VerifyOptions(
+        steps:         ['selfie', 'recto'],
+        target:        'SN-CIN',
+        language:      'fr',
+        challengeMode: 'standard',
+        kycIdentifier: 'user-002',
+        images: [
+            'selfie_center_face'    => '/path/to/user2_selfie.jpg',
+            'recto_center_document' => '/path/to/user2_recto.jpg',
+        ],
+    ),
+]);
+
+foreach ($results as $i => $result) {
+    if ($result['success']) {
+        echo "[{$i}] " . $result['result']->overallStatus . PHP_EOL;
+    } else {
+        echo "[{$i}] ERROR: " . $result['error'] . PHP_EOL;
+    }
+}
+```
+
+---
+
 ### `static verifyWebhookSignature(string $payload, string $apiKey, string $signatureHeader): bool`
 
 Verify that a webhook notification came from the KyvShield API.

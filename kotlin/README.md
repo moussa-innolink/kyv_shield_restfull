@@ -218,6 +218,47 @@ chosen `challengeMode`.
 
 ---
 
+### `client.verifyBatch(optionsList: List<VerifyOptions>): List<BatchResult>`
+
+Submit up to 10 KYC verifications concurrently using a dedicated thread pool. Results are returned in the same order as the input list. Images within each verification are compressed in parallel (up to `DEFAULT_MAX_CONCURRENT_COMPRESS = 20`). The executor is shut down in a `finally` block.
+
+```kotlin
+val kyv = KyvShield(apiKey = "your-api-key")
+
+val results = kyv.verifyBatch(
+    listOf(
+        VerifyOptions(
+            steps         = listOf(Step.RECTO, Step.VERSO),
+            target        = "SN-CIN",
+            kycIdentifier = "user-001",
+            images        = mapOf(
+                "recto_center_document" to "/path/to/user1_recto.jpg",
+                "verso_center_document" to "/path/to/user1_verso.jpg",
+            ),
+        ),
+        VerifyOptions(
+            steps         = listOf(Step.SELFIE, Step.RECTO),
+            target        = "SN-CIN",
+            kycIdentifier = "user-002",
+            images        = mapOf(
+                "selfie_center_face"    to "/path/to/user2_selfie.jpg",
+                "recto_center_document" to "/path/to/user2_recto.jpg",
+            ),
+        ),
+    )
+)
+
+results.forEachIndexed { i, r ->
+    if (r.success) {
+        println("[$i] ${r.result?.overallStatus} — confidence ${r.result?.overallConfidence}")
+    } else {
+        println("[$i] ERROR: ${r.error}")
+    }
+}
+```
+
+---
+
 ### `KyvShield.verifyWebhookSignature(payload, apiKey, signatureHeader): Boolean`
 
 Verifies the HMAC-SHA256 signature of an incoming webhook notification.

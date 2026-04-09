@@ -1,6 +1,6 @@
 {
   "name": "@kyvshield/rest-sdk",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "KyvShield REST KYC API SDK for Node.js/TypeScript — typed, self-contained, zero dependencies",
   "main": "nodejs/dist/index.js",
   "types": "nodejs/dist/index.d.ts",

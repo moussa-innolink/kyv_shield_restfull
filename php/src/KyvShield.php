@@ -18,13 +18,36 @@ final class KyvShield
 {
     private const DEFAULT_BASE_URL = 'https://kyvshield-naruto.innolinkcloud.com';
 
+    private readonly int $imageMaxWidth;
+    private readonly int $imageQuality;
+    private readonly bool $enableLog;
+
+    /** Default maximum image width in pixels before resize. */
+    public const DEFAULT_IMAGE_MAX_WIDTH = 1280;
+
+    /** Default JPEG compression quality (0–100). */
+    public const DEFAULT_IMAGE_QUALITY = 90;
+
+    /** Maximum number of images compressed concurrently (PHP is single-threaded; documented only). */
+    public const DEFAULT_MAX_CONCURRENT_COMPRESS = 20;
+
     /**
-     * @param  string  $apiKey   Value sent in the X-API-Key header
-     * @param  string  $baseUrl  Override to point at a different environment
+     * @param  string  $apiKey        Value sent in the X-API-Key header
+     * @param  string  $baseUrl       Override to point at a different environment
+     * @param  string  $language      Default language for responses (default: 'fr')
+     * @param  string  $challengeMode Default challenge mode (default: 'standard')
+     * @param  int     $imageMaxWidth Maximum image width in pixels (default: 1280)
+     * @param  int     $imageQuality  JPEG compression quality 0–100 (default: 90)
+     * @param  bool    $enableLog     Enable [KyvShield] tagged logging (default: true)
      */
     public function __construct(
         private readonly string $apiKey,
         private readonly string $baseUrl = self::DEFAULT_BASE_URL,
+        private readonly string $language = 'fr',
+        private readonly string $challengeMode = 'standard',
+        int $imageMaxWidth = 1280,
+        int $imageQuality = 90,
+        bool $enableLog = true,
     ) {
         if ($this->apiKey === '') {
             throw new KyvShieldException('API key must not be empty.');
@@ -32,6 +55,18 @@ final class KyvShield
         if (!extension_loaded('curl')) {
             throw new KyvShieldException('The curl PHP extension is required by the KyvShield SDK.');
         }
+        if (!extension_loaded('gd')) {
+            throw new KyvShieldException('PHP GD extension is required. Install: apt-get install php-gd');
+        }
+        $this->imageMaxWidth = $imageMaxWidth;
+        $this->imageQuality  = $imageQuality;
+        $this->enableLog     = $enableLog;
+        $this->log('info', sprintf(
+            'Initialized (baseUrl=%s, imageMaxWidth=%d, imageQuality=%d)',
+            $this->baseUrl,
+            $this->imageMaxWidth,
+            $this->imageQuality,
+        ));
     }
 
     // =========================================================================
@@ -48,9 +83,25 @@ final class KyvShield
      */
     public function getChallenges(): ChallengesResponse
     {
-        $data = $this->request('GET', '/api/v1/challenges');
+        $this->log('info', 'GET /api/v1/challenges...');
+        $data     = $this->request('GET', '/api/v1/challenges');
+        $response = ChallengesResponse::fromArray($data);
 
-        return ChallengesResponse::fromArray($data);
+        $selfieCount = 0;
+        $docCount    = 0;
+        if (isset($data['challenges']['selfie']) && is_array($data['challenges']['selfie'])) {
+            foreach ($data['challenges']['selfie'] as $modes) {
+                $selfieCount += is_array($modes) ? count($modes) : 0;
+            }
+        }
+        if (isset($data['challenges']['document']) && is_array($data['challenges']['document'])) {
+            foreach ($data['challenges']['document'] as $modes) {
+                $docCount += is_array($modes) ? count($modes) : 0;
+            }
+        }
+        $this->log('info', sprintf('Challenges loaded (%d selfie modes, %d document modes)', $selfieCount, $docCount));
+
+        return $response;
     }
 
     /**
@@ -64,10 +115,35 @@ final class KyvShield
     {
         $this->validateVerifyOptions($options);
 
-        $fields = $this->buildFormFields($options);
-        $data   = $this->request('POST', '/api/v1/kyc/verify', $fields);
+        $imageCount = count($options->images);
+        $stepsStr   = implode(',', $options->steps);
+        $this->log('info', sprintf(
+            'POST /api/v1/kyc/verify (steps=[%s], target=%s, images=%d)',
+            $stepsStr,
+            $options->target,
+            $imageCount,
+        ));
+        $startMs = (int) (microtime(true) * 1000);
 
-        return KycResponse::fromArray($data);
+        $tmpFiles = [];
+        try {
+            $fields = $this->buildFormFields($options, $tmpFiles);
+            $data   = $this->request('POST', '/api/v1/kyc/verify', $fields);
+        } finally {
+            foreach ($tmpFiles as $tmpFile) {
+                if (is_file($tmpFile)) {
+                    @unlink($tmpFile);
+                }
+            }
+        }
+
+        $response  = KycResponse::fromArray($data);
+        $elapsed   = (int) (microtime(true) * 1000) - $startMs;
+        $status    = $data['overall_status'] ?? 'unknown';
+        $confidence = number_format((float) ($data['overall_confidence'] ?? 0), 2);
+        $this->log('info', sprintf('Verify complete: %s (%s) in %dms', $status, $confidence, $elapsed));
+
+        return $response;
     }
 
     /**
@@ -82,14 +158,18 @@ final class KyvShield
         if (count($optionsList) > 10) {
             throw new KyvShieldException('Batch size cannot exceed 10');
         }
+        $this->log('info', sprintf('Batch verify: %d requests...', count($optionsList)));
 
         $multiHandle = curl_multi_init();
         $handles     = [];
         $results     = [];
 
+        $allTmpFiles = [];
         foreach ($optionsList as $i => $options) {
             $this->validateVerifyOptions($options);
-            $fields = $this->buildFormFields($options);
+            $tmpFiles = [];
+            $fields = $this->buildFormFields($options, $tmpFiles);
+            $allTmpFiles = array_merge($allTmpFiles, $tmpFiles);
 
             $url = rtrim($this->baseUrl, '/') . '/api/v1/kyc/verify';
             $ch  = curl_init($url);
@@ -165,6 +245,17 @@ final class KyvShield
 
         curl_multi_close($multiHandle);
 
+        // Clean up all temp files created during this batch
+        foreach ($allTmpFiles as $tmpFile) {
+            if (is_file($tmpFile)) {
+                @unlink($tmpFile);
+            }
+        }
+
+        $passed  = count(array_filter($results, static fn($r) => $r['success'] === true));
+        $rejected = count($results) - $passed;
+        $this->log('info', sprintf('Batch complete: %d pass, %d reject', $passed, $rejected));
+
         return $results;
     }
 
@@ -199,6 +290,126 @@ final class KyvShield
     // =========================================================================
     // PRIVATE HELPERS
     // =========================================================================
+
+    /**
+     * Tagged logger. All messages are prefixed with [KyvShield].
+     * Uses error_log() for warn/error, and echo to stdout for debug/info.
+     * Does nothing when enableLog is false.
+     *
+     * @param  string  $level  debug|info|warn|error
+     * @param  string  $message
+     */
+    private function log(string $level, string $message): void
+    {
+        if (!$this->enableLog) {
+            return;
+        }
+        $line = '[KyvShield] ' . strtoupper($level) . ': ' . $message;
+        if ($level === 'warn' || $level === 'error') {
+            error_log($line);
+        } else {
+            echo $line . PHP_EOL;
+        }
+    }
+
+    /**
+     * Resize and compress an image using the GD extension.
+     *
+     * If the image width exceeds $maxWidth, it is scaled down maintaining
+     * the aspect ratio and re-encoded as JPEG at the given quality.
+     * If the GD extension is not available, the original bytes are returned
+     * unchanged (with a warning log).
+     *
+     * @param  string  $bytes    Raw image bytes
+     * @param  string  $label    Image label for logging
+     * @return string            Processed image bytes
+     */
+    private function processImage(string $bytes, string $label = 'image'): string
+    {
+        $originalKb = (int) (strlen($bytes) / 1024);
+
+        // Detect image format from magic bytes
+        $isPng = strlen($bytes) >= 4 && str_starts_with($bytes, "\x89PNG");
+
+        $src = @imagecreatefromstring($bytes);
+        if ($src === false) {
+            $this->log('warn', sprintf('Image %s: could not decode for processing — using original (%dKB)', $label, $originalKb));
+            return $bytes;
+        }
+
+        $origWidth  = imagesx($src);
+        $origHeight = imagesy($src);
+
+        if ($origWidth <= $this->imageMaxWidth) {
+            // No resize needed — re-encode preserving original format
+            ob_start();
+            if ($isPng) {
+                // PNG quality is 0–9 (compression level), convert from 0–100 scale
+                $pngQuality = (int) round((100 - $this->imageQuality) / 11);
+                imagepng($src, null, $pngQuality);
+            } else {
+                imagejpeg($src, null, $this->imageQuality);
+            }
+            $result = ob_get_clean();
+            imagedestroy($src);
+            if ($result === false || $result === '') {
+                return $bytes;
+            }
+            $finalKb = (int) (strlen($result) / 1024);
+            $this->log('debug', sprintf(
+                'Image %s: %dKB → compressed %d%% → %dKB',
+                $label,
+                $originalKb,
+                $this->imageQuality,
+                $finalKb,
+            ));
+            return $result;
+        }
+
+        // Resize maintaining aspect ratio
+        $newWidth  = $this->imageMaxWidth;
+        $newHeight = (int) round($origHeight * $newWidth / $origWidth);
+        $dst = imagecreatetruecolor($newWidth, $newHeight);
+        if ($dst === false) {
+            imagedestroy($src);
+            return $bytes;
+        }
+
+        // Preserve alpha channel for PNG
+        if ($isPng) {
+            imagealphablending($dst, false);
+            imagesavealpha($dst, true);
+        }
+
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $origWidth, $origHeight);
+        imagedestroy($src);
+
+        ob_start();
+        if ($isPng) {
+            $pngQuality = (int) round((100 - $this->imageQuality) / 11);
+            imagepng($dst, null, $pngQuality);
+        } else {
+            imagejpeg($dst, null, $this->imageQuality);
+        }
+        $result = ob_get_clean();
+        imagedestroy($dst);
+
+        if ($result === false || $result === '') {
+            return $bytes;
+        }
+
+        $finalKb = (int) (strlen($result) / 1024);
+        $this->log('info', sprintf(
+            'Image %s: %dKB → resized %dpx → compressed %d%% → %dKB',
+            $label,
+            $originalKb,
+            $newWidth,
+            $this->imageQuality,
+            $finalKb,
+        ));
+
+        return $result;
+    }
 
     /**
      * Execute an HTTP request using curl.
@@ -388,10 +599,11 @@ final class KyvShield
     /**
      * Build the flat multipart field array for curl.
      *
+     * @param  string[]  $tmpFiles  Reference to array collecting temp file paths for cleanup
      * @return array<string,mixed>
      * @throws KyvShieldException
      */
-    private function buildFormFields(VerifyOptions $options): array
+    private function buildFormFields(VerifyOptions $options, array &$tmpFiles = []): array
     {
         $fields = [
             'steps'            => json_encode($options->steps, JSON_THROW_ON_ERROR),
@@ -412,36 +624,26 @@ final class KyvShield
 
         // Image files — each keyed as {step}_{challenge}, e.g. recto_center_document
         foreach ($options->images as $fieldName => $value) {
-            // Check if this is a plain file path that we can pass directly as a CURLFile
-            // (saves memory for large files compared to reading into a string first).
-            $isPlainFilePath = !str_starts_with($value, 'http://')
-                && !str_starts_with($value, 'https://')
-                && !str_starts_with($value, 'data:image/')
-                && (str_contains($value, '/') || str_contains($value, '\\') || preg_match('/\.\w{2,5}$/', $value))
-                && is_file($value);
-
-            if ($isPlainFilePath) {
-                $mimeType = $this->detectMimeType($value);
-                $fields[$fieldName] = new \CURLFile($value, $mimeType, basename($value));
-            } else {
-                // Resolve to raw bytes and write to a temp file so curl can send it
-                $bytes    = $this->resolveImage($value);
-                $tmpFile  = tempnam(sys_get_temp_dir(), 'kyv_');
-                if ($tmpFile === false) {
-                    throw new KyvShieldException('Could not create temporary file for image field "' . $fieldName . '"');
-                }
-                file_put_contents($tmpFile, $bytes);
-                $mimeType = 'image/jpeg'; // default; sniff first bytes if needed
-                if (strlen($bytes) >= 4) {
-                    $magic = substr($bytes, 0, 4);
-                    if (str_starts_with($magic, "\x89PNG")) {
-                        $mimeType = 'image/png';
-                    } elseif (str_starts_with($magic, 'RIFF')) {
-                        $mimeType = 'image/webp';
-                    }
-                }
-                $fields[$fieldName] = new \CURLFile($tmpFile, $mimeType, $fieldName . '.jpg');
+            // Resolve to raw bytes (always — so processImage can be applied)
+            $bytes    = $this->resolveImage($value, $fieldName);
+            // Resize + compress via GD
+            $bytes    = $this->processImage($bytes, $fieldName);
+            $tmpFile  = tempnam(sys_get_temp_dir(), 'kyv_');
+            if ($tmpFile === false) {
+                throw new KyvShieldException('Could not create temporary file for image field "' . $fieldName . '"');
             }
+            $tmpFiles[] = $tmpFile;
+            file_put_contents($tmpFile, $bytes);
+            $mimeType = 'image/jpeg'; // default; sniff first bytes if needed
+            if (strlen($bytes) >= 4) {
+                $magic = substr($bytes, 0, 4);
+                if (str_starts_with($magic, "\x89PNG")) {
+                    $mimeType = 'image/png';
+                } elseif (str_starts_with($magic, 'RIFF')) {
+                    $mimeType = 'image/webp';
+                }
+            }
+            $fields[$fieldName] = new \CURLFile($tmpFile, $mimeType, $fieldName . '.jpg');
         }
 
         return $fields;
@@ -458,16 +660,17 @@ final class KyvShield
      *
      * @throws KyvShieldException on download failure or unreadable file
      */
-    private function resolveImage(string $value): string
+    private function resolveImage(string $value, string $label = 'image'): string
     {
         // 1. URL
         if (str_starts_with($value, 'http://') || str_starts_with($value, 'https://')) {
+            $this->log('debug', 'Downloading image from ' . $value);
             $ch = curl_init($value);
             if ($ch === false) {
                 throw new KyvShieldException('curl_init failed for image URL: ' . $value);
             }
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
             curl_setopt($ch, CURLOPT_TIMEOUT, 30);
             $bytes = curl_exec($ch);
             $errno = curl_errno($ch);
@@ -486,6 +689,8 @@ final class KyvShield
                 throw new KyvShieldException('Invalid data URI for image field');
             }
             $b64   = substr($value, $commaPos + 1);
+            $sizeKb = (int) (strlen($b64) * 0.75 / 1024);
+            $this->log('debug', sprintf('Decoding base64 image %s (%dKB)', $label, $sizeKb));
             $bytes = base64_decode($b64, true);
             if ($bytes === false) {
                 throw new KyvShieldException('Failed to decode base64 data URI');
@@ -496,6 +701,8 @@ final class KyvShield
         // 3. Bare base64 string (no path separators, very long, no extension)
         if (!str_contains($value, '/') && !str_contains($value, '\\')
             && strlen($value) > 64 && !preg_match('/\.\w{2,5}$/', $value)) {
+            $sizeKb = (int) (strlen($value) * 0.75 / 1024);
+            $this->log('debug', sprintf('Decoding base64 image %s (%dKB)', $label, $sizeKb));
             $bytes = base64_decode($value, true);
             if ($bytes === false) {
                 throw new KyvShieldException('Failed to decode base64 image string');
@@ -514,18 +721,4 @@ final class KyvShield
         return $bytes;
     }
 
-    /**
-     * Detect MIME type for an image file (JPEG or PNG).
-     */
-    private function detectMimeType(string $filePath): string
-    {
-        $ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
-
-        return match($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
-            'png'         => 'image/png',
-            'webp'        => 'image/webp',
-            default       => 'application/octet-stream',
-        };
-    }
 }

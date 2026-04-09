@@ -2,6 +2,7 @@
 /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/model/OverallStatus.java
 /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/model/ExtractedPhoto.java
 /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/model/KycResponse.java
+/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/model/BatchResult.java
 /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/model/Step.java
 /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/model/ExtractionField.java
 /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/src/main/java/sn/innolink/kyvshield/KyvShieldException.java

@@ -33,6 +33,13 @@ export * from './types.js';
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DEFAULT_BASE_URL = 'https://kyvshield-naruto.innolinkcloud.com';
 const API_VERSION = '/api/v1';
+// ─── SDK Constants ────────────────────────────────────────────────────────────
+/** Default maximum image width in pixels before resize. */
+export const DEFAULT_IMAGE_MAX_WIDTH = 1280;
+/** Default JPEG compression quality (0–100). */
+export const DEFAULT_IMAGE_QUALITY = 90;
+/** Maximum number of images compressed in parallel. */
+export const DEFAULT_MAX_CONCURRENT_COMPRESS = 20;
 // ─── Error class ─────────────────────────────────────────────────────────────
 /**
  * Error thrown when the KyvShield API returns a non-2xx response
@@ -57,28 +64,43 @@ export class KyvShieldError extends Error {
 export class KyvShield {
     apiKey;
     baseUrl;
+    imageOptions;
+    enableLog;
     /**
      * Create a new KyvShield client.
      *
      * @param apiKey  - Your KyvShield API key (sent as the `X-API-Key` header).
      * @param baseUrl - Optional base URL override. Defaults to the production endpoint.
+     * @param options - Optional SDK configuration (logging, image options).
      *
      * @example
      * ```ts
-     * // Production
-     * const kyv = new KyvShield('your-api-key');
+     * // Production with logging enabled
+     * const kyv = new KyvShield('your-api-key', undefined, { enableLog: true });
      *
      * // Local / staging
      * const kyv = new KyvShield('your-api-key', 'http://localhost:8080');
+     *
+     * // Custom image options
+     * const kyv = new KyvShield('your-api-key', undefined, {
+     *   imageOptions: { maxWidth: 1280, jpegQuality: 90 },
+     *   enableLog: true,
+     * });
      * ```
      */
-    constructor(apiKey, baseUrl = DEFAULT_BASE_URL) {
+    constructor(apiKey, baseUrl = DEFAULT_BASE_URL, options = {}) {
         if (!apiKey || apiKey.trim() === '') {
             throw new KyvShieldError('apiKey must be a non-empty string');
         }
         this.apiKey = apiKey;
         // Normalise: remove trailing slash so we can always append '/api/v1/...'
         this.baseUrl = baseUrl.replace(/\/+$/, '');
+        this.enableLog = options.enableLog ?? true;
+        this.imageOptions = {
+            maxWidth: options.imageOptions?.maxWidth ?? 1280,
+            jpegQuality: options.imageOptions?.jpegQuality ?? 90,
+        };
+        this.log('info', `Initialized (baseUrl=${this.baseUrl}, imageMaxWidth=${this.imageOptions.maxWidth}, imageQuality=${this.imageOptions.jpegQuality})`);
     }
     // ── Public methods ──────────────────────────────────────────────────────────
     /**
@@ -97,13 +119,22 @@ export class KyvShield {
      */
     async getChallenges() {
         const url = `${this.baseUrl}${API_VERSION}/challenges`;
+        this.log('info', `GET ${API_VERSION}/challenges...`);
         const response = await fetch(url, {
             method: 'GET',
             headers: this.buildHeaders(),
             signal: AbortSignal.timeout(120_000),
         });
         await this.assertOk(response);
-        return response.json();
+        const result = await response.json();
+        const selfieCount = result.challenges?.selfie
+            ? Object.values(result.challenges.selfie).flat().length
+            : 0;
+        const docCount = result.challenges?.document
+            ? Object.values(result.challenges.document).flat().length
+            : 0;
+        this.log('info', `Challenges loaded (${selfieCount} selfie modes, ${docCount} document modes)`);
+        return result;
     }
     /**
      * Submit a KYC verification request.
@@ -139,6 +170,9 @@ export class KyvShield {
      */
     async verify(options) {
         this.validateVerifyOptions(options);
+        const imageCount = Object.keys(options.images).length;
+        this.log('info', `POST ${API_VERSION}/kyc/verify (steps=[${options.steps.join(',')}], target=${options.target}, images=${imageCount})`);
+        const startMs = Date.now();
         const { body, contentType } = await this.buildMultipartBody(options);
         const url = `${this.baseUrl}${API_VERSION}/kyc/verify`;
         const response = await fetch(url, {
@@ -151,7 +185,10 @@ export class KyvShield {
             signal: AbortSignal.timeout(120_000),
         });
         await this.assertOk(response);
-        return response.json();
+        const result = await response.json();
+        const elapsed = Date.now() - startMs;
+        this.log('info', `Verify complete: ${result.overall_status} (${result.overall_confidence?.toFixed(2)}) in ${elapsed}ms`);
+        return result;
     }
     /**
      * Submit multiple KYC verification requests concurrently.
@@ -166,7 +203,13 @@ export class KyvShield {
         if (optionsList.length > 10) {
             throw new KyvShieldError('Batch size cannot exceed 10');
         }
-        return Promise.allSettled(optionsList.map(opts => this.verify(opts)));
+        this.log('info', `Batch verify: ${optionsList.length} requests...`);
+        const results = await Promise.allSettled(optionsList.map(opts => this.verify(opts)));
+        const passed = results.filter(r => r.status === 'fulfilled' && r.value.overall_status === 'pass').length;
+        const rejected = results.filter(r => r.status === 'fulfilled' && r.value.overall_status !== 'pass').length;
+        const failed = results.filter(r => r.status === 'rejected').length;
+        this.log('info', `Batch complete: ${passed} pass, ${rejected + failed} reject`);
+        return results;
     }
     /**
      * Verify an incoming webhook signature.
@@ -220,6 +263,29 @@ export class KyvShield {
         }
     }
     // ── Private helpers ─────────────────────────────────────────────────────────
+    /**
+     * Tagged logger. All messages are prefixed with `[KyvShield]`.
+     * Does nothing when `enableLog` is false.
+     */
+    log(level, ...args) {
+        if (!this.enableLog)
+            return;
+        const tag = '[KyvShield]';
+        switch (level) {
+            case 'debug':
+                console.debug(tag, ...args);
+                break;
+            case 'info':
+                console.info(tag, ...args);
+                break;
+            case 'warn':
+                console.warn(tag, ...args);
+                break;
+            case 'error':
+                console.error(tag, ...args);
+                break;
+        }
+    }
     /** Build the common headers used by all non-multipart requests. */
     buildHeaders() {
         return {
@@ -267,13 +333,16 @@ export class KyvShield {
      * @param value - The image value from {@link VerifyOptions.images}.
      * @returns A Buffer containing the image bytes.
      */
-    async resolveImage(value) {
+    async resolveImage(value, fieldName) {
+        const label = fieldName ?? 'image';
         // 1. Already raw bytes
         if (Buffer.isBuffer(value)) {
-            return value;
+            const buf = this.warnIfLarge(value, label);
+            return buf;
         }
         // 2. URL — download with a 30-second timeout
         if (value.startsWith('http://') || value.startsWith('https://')) {
+            this.log('debug', `Downloading image from ${value}`);
             const response = await fetch(value, {
                 signal: AbortSignal.timeout(30_000),
             });
@@ -281,7 +350,8 @@ export class KyvShield {
                 throw new KyvShieldError(`Failed to download image from URL "${value}": HTTP ${response.status}`);
             }
             const arrayBuffer = await response.arrayBuffer();
-            return Buffer.from(arrayBuffer);
+            const buf = Buffer.from(arrayBuffer);
+            return this.warnIfLarge(buf, label);
         }
         // 3. Data URI — strip prefix and decode base64
         if (value.startsWith('data:image/')) {
@@ -290,15 +360,37 @@ export class KyvShield {
                 throw new KyvShieldError(`Invalid data URI for image: "${value.slice(0, 40)}..."`);
             }
             const b64 = value.slice(commaIndex + 1);
-            return Buffer.from(b64, 'base64');
+            const sizeKb = Math.round(b64.length * 0.75 / 1024);
+            this.log('debug', `Decoding base64 image (${sizeKb}KB)`);
+            const buf = Buffer.from(b64, 'base64');
+            return this.warnIfLarge(buf, label);
         }
         // 4. Base64 string (no path separators, long, no file extension)
         if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value)) {
-            return Buffer.from(value, 'base64');
+            const sizeKb = Math.round(value.length * 0.75 / 1024);
+            this.log('debug', `Decoding base64 image (${sizeKb}KB)`);
+            const buf = Buffer.from(value, 'base64');
+            return this.warnIfLarge(buf, label);
         }
         // 5. File path
         const resolved = path.resolve(value);
-        return fs.readFileSync(resolved);
+        const buf = fs.readFileSync(resolved);
+        return this.warnIfLarge(buf, label);
+    }
+    /**
+     * Warn if image exceeds the configured maxWidth threshold (approximated by size).
+     * Node.js has no native image resize — if > 1MB, log a warning.
+     */
+    warnIfLarge(data, label) {
+        const sizeKb = Math.round(data.length / 1024);
+        const oneMB = 1024 * 1024;
+        if (data.length > oneMB) {
+            this.log('warn', `Image ${label}: ${sizeKb}KB exceeds 1MB. Node.js SDK cannot resize natively — consider pre-resizing to ${this.imageOptions.maxWidth}px before passing to SDK.`);
+        }
+        else {
+            this.log('debug', `Image ${label}: ${sizeKb}KB`);
+        }
+        return data;
     }
     /**
      * Build a native `multipart/form-data` body from {@link VerifyOptions}.
@@ -341,17 +433,46 @@ export class KyvShield {
         if (options.kycIdentifier !== undefined) {
             parts.push(textPart('kyc_identifier', options.kycIdentifier));
         }
-        // ── Image files (resolve all formats) ───────────────────────────────────
-        for (const [key, value] of Object.entries(options.images)) {
-            const data = await this.resolveImage(value);
-            // Determine a sensible filename for the multipart field
-            let filename = 'image.jpg';
-            if (!Buffer.isBuffer(value) && !value.startsWith('data:image/') && !value.startsWith('http')) {
-                // Plain path — use the basename
-                filename = path.basename(value.includes('/') || value.includes('\\') ? value : key + '.jpg');
+        // ── Image files — resolve + compress in parallel (semaphore: max 20) ───
+        const imageEntries = Object.entries(options.images);
+        if (imageEntries.length > 0) {
+            // Simple semaphore: allow up to DEFAULT_MAX_CONCURRENT_COMPRESS concurrent resolves
+            let running = 0;
+            const queue = [];
+            const acquire = () => {
+                if (running < DEFAULT_MAX_CONCURRENT_COMPRESS) {
+                    running++;
+                    return Promise.resolve();
+                }
+                return new Promise(resolve => queue.push(resolve));
+            };
+            const release = () => {
+                running--;
+                const next = queue.shift();
+                if (next) {
+                    running++;
+                    next();
+                }
+            };
+            const resolveWithSemaphore = async (key, value) => {
+                await acquire();
+                try {
+                    const data = await this.resolveImage(value, key);
+                    let filename = 'image.jpg';
+                    if (!Buffer.isBuffer(value) && !value.startsWith('data:image/') && !value.startsWith('http')) {
+                        filename = path.basename(value.includes('/') || value.includes('\\') ? value : key + '.jpg');
+                    }
+                    return { key, data, filename };
+                }
+                finally {
+                    release();
+                }
+            };
+            const resolved = await Promise.all(imageEntries.map(([key, value]) => resolveWithSemaphore(key, value)));
+            for (const { key, data, filename } of resolved) {
+                const mimeType = this.guessMimeType(filename);
+                parts.push(filePart(key, filename, mimeType, data));
             }
-            const mimeType = this.guessMimeType(filename);
-            parts.push(filePart(key, filename, mimeType, data));
         }
         // ── Closing boundary ────────────────────────────────────────────────────
         parts.push(Buffer.from(`--${boundary}--${CRLF}`));

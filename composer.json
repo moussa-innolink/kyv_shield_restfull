@@ -1,5 +1,5 @@
 {
-  "name": "kyvshield/rest-sdk",
+  "name": "kyvshield/rest-sdk-php",
   "description": "KyvShield REST KYC API SDK for PHP — typed, self-contained, zero dependencies",
   "type": "library",
   "license": "MIT",

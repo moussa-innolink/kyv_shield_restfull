@@ -26,8 +26,14 @@
  * console.log(result.overall_status); // 'pass' | 'reject'
  * ```
  */
-import type { ChallengesResponse, KycResponse, KyvShieldErrorDetails, VerifyOptions } from './types.js';
+import type { ChallengesResponse, KycResponse, KyvShieldErrorDetails, KyvShieldOptions, VerifyOptions } from './types.js';
 export * from './types.js';
+/** Default maximum image width in pixels before resize. */
+export declare const DEFAULT_IMAGE_MAX_WIDTH = 1280;
+/** Default JPEG compression quality (0–100). */
+export declare const DEFAULT_IMAGE_QUALITY = 90;
+/** Maximum number of images compressed in parallel. */
+export declare const DEFAULT_MAX_CONCURRENT_COMPRESS = 20;
 /**
  * Error thrown when the KyvShield API returns a non-2xx response
  * or when a request cannot be completed.
@@ -45,22 +51,31 @@ export declare class KyvShieldError extends Error {
 export declare class KyvShield {
     private readonly apiKey;
     private readonly baseUrl;
+    private readonly imageOptions;
+    private readonly enableLog;
     /**
      * Create a new KyvShield client.
      *
      * @param apiKey  - Your KyvShield API key (sent as the `X-API-Key` header).
      * @param baseUrl - Optional base URL override. Defaults to the production endpoint.
+     * @param options - Optional SDK configuration (logging, image options).
      *
      * @example
      * ```ts
-     * // Production
-     * const kyv = new KyvShield('your-api-key');
+     * // Production with logging enabled
+     * const kyv = new KyvShield('your-api-key', undefined, { enableLog: true });
      *
      * // Local / staging
      * const kyv = new KyvShield('your-api-key', 'http://localhost:8080');
+     *
+     * // Custom image options
+     * const kyv = new KyvShield('your-api-key', undefined, {
+     *   imageOptions: { maxWidth: 1280, jpegQuality: 90 },
+     *   enableLog: true,
+     * });
      * ```
      */
-    constructor(apiKey: string, baseUrl?: string);
+    constructor(apiKey: string, baseUrl?: string, options?: KyvShieldOptions);
     /**
      * Retrieve the list of available challenges for each mode and step type.
      *
@@ -148,6 +163,11 @@ export declare class KyvShield {
      * ```
      */
     static verifyWebhookSignature(payload: Buffer, apiKey: string, signatureHeader: string): boolean;
+    /**
+     * Tagged logger. All messages are prefixed with `[KyvShield]`.
+     * Does nothing when `enableLog` is false.
+     */
+    private log;
     /** Build the common headers used by all non-multipart requests. */
     private buildHeaders;
     /**
@@ -165,6 +185,11 @@ export declare class KyvShield {
      * @returns A Buffer containing the image bytes.
      */
     private resolveImage;
+    /**
+     * Warn if image exceeds the configured maxWidth threshold (approximated by size).
+     * Node.js has no native image resize — if > 1MB, log a warning.
+     */
+    private warnIfLarge;
     /**
      * Build a native `multipart/form-data` body from {@link VerifyOptions}.
      *

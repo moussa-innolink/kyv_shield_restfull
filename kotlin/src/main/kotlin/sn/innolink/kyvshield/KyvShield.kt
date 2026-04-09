@@ -2,6 +2,10 @@ package sn.innolink.kyvshield
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.awt.Graphics2D
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URI
@@ -14,8 +18,13 @@ import java.time.Duration
 import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import javax.imageio.IIOImage
+import javax.imageio.ImageIO
+import javax.imageio.ImageWriteParam
+import javax.imageio.stream.MemoryCacheImageOutputStream
 
 /**
  * KyvShield REST SDK — Main Client
@@ -23,7 +32,7 @@ import javax.crypto.spec.SecretKeySpec
  * Entry point for all KyvShield KYC REST API operations.
  *
  * ```kotlin
- * val client = KyvShield(apiKey = "kvs_live_xxxx")
+ * val client = KyvShield(apiKey = "kvs_live_xxxx", enableLog = true)
  *
  * // 1. Fetch available challenges
  * val challenges = client.getChallenges()
@@ -48,12 +57,24 @@ import javax.crypto.spec.SecretKeySpec
  * @param apiKey Your KyvShield API key (passed as `X-API-Key` header on every request).
  * @param baseUrl Base URL of the KyvShield API. Defaults to the production endpoint.
  * @param timeoutSeconds HTTP request timeout in seconds. Defaults to 120 s.
+ * @param imageMaxWidth Maximum image width in pixels; wider images are resized. Default: 1280.
+ * @param imageQuality JPEG compression quality 0–100. Default: 90.
+ * @param enableLog Enable [KyvShield] tagged logging. Default: true.
  */
 class KyvShield(
     private val apiKey: String,
     private val baseUrl: String = "https://kyvshield-naruto.innolinkcloud.com",
     private val timeoutSeconds: Long = 120L,
+    private val imageMaxWidth: Int = 1280,
+    private val imageQuality: Int = 90,
+    private val enableLog: Boolean = true,
 ) {
+
+    // ─── Initialization ──────────────────────────────────────────────────────
+
+    init {
+        log("Initialized (baseUrl=${baseUrl.trimEnd('/')}, imageMaxWidth=$imageMaxWidth, imageQuality=$imageQuality)")
+    }
 
     // ─── HTTP client ─────────────────────────────────────────────────────────
 
@@ -76,6 +97,7 @@ class KyvShield(
      */
     fun getChallenges(): ChallengesResponse {
         val url = "${baseUrl.trimEnd('/')}/api/v1/challenges"
+        log("GET /api/v1/challenges...")
         val request = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("X-API-Key", apiKey)
@@ -85,7 +107,9 @@ class KyvShield(
             .build()
 
         val raw = executeRequest(request)
-        return parseChallengesResponse(raw)
+        val result = parseChallengesResponse(raw)
+        log("Challenges loaded")
+        return result
     }
 
     /**
@@ -101,8 +125,12 @@ class KyvShield(
      */
     fun verify(options: VerifyOptions): KycResponse {
         val url = "${baseUrl.trimEnd('/')}/api/v1/kyc/verify"
-        val boundary = generateBoundary()
+        val imageCount = options.images.size
+        val stepsStr = options.steps.joinToString(",") { it.value }
+        log("POST /api/v1/kyc/verify (steps=[$stepsStr], target=${options.target}, images=$imageCount)")
+        val startMs = System.currentTimeMillis()
 
+        val boundary = generateBoundary()
         val body = buildMultipartBody(options, boundary)
 
         val request = HttpRequest.newBuilder()
@@ -115,7 +143,10 @@ class KyvShield(
             .build()
 
         val raw = executeRequest(request)
-        return parseKycResponse(raw)
+        val result = parseKycResponse(raw)
+        val elapsed = System.currentTimeMillis() - startMs
+        log("Verify complete: ${result.overallStatus} (${String.format("%.2f", result.overallConfidence)}) in ${elapsed}ms")
+        return result
     }
 
     /**
@@ -130,19 +161,27 @@ class KyvShield(
      */
     fun verifyBatch(optionsList: List<VerifyOptions>): List<BatchResult> {
         require(optionsList.size <= 10) { "Batch size cannot exceed 10" }
-        val executor = Executors.newFixedThreadPool(optionsList.size)
-        val futures = optionsList.map { opts ->
-            CompletableFuture.supplyAsync({
-                try {
-                    BatchResult(success = true, result = verify(opts), error = null)
-                } catch (e: Exception) {
-                    BatchResult(success = false, result = null, error = e.message)
-                }
-            }, executor)
+        log("Batch verify: ${optionsList.size} requests...")
+        val executor = Executors.newFixedThreadPool(optionsList.size.coerceAtLeast(1))
+        return try {
+            val futures = optionsList.map { opts ->
+                CompletableFuture.supplyAsync({
+                    try {
+                        BatchResult(success = true, result = verify(opts), error = null)
+                    } catch (e: Exception) {
+                        BatchResult(success = false, result = null, error = e.message)
+                    }
+                }, executor)
+            }
+            CompletableFuture.allOf(*futures.toTypedArray()).join()
+            val results = futures.map { it.join() }
+            val passed = results.count { it.success }
+            val rejected = results.size - passed
+            log("Batch complete: $passed pass, $rejected reject")
+            results
+        } finally {
+            executor.shutdown()
         }
-        CompletableFuture.allOf(*futures.toTypedArray()).join()
-        executor.shutdown()
-        return futures.map { it.join() }
     }
 
     // ─── Companion object ────────────────────────────────────────────────────
@@ -193,6 +232,84 @@ class KyvShield(
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────
+
+    /**
+     * Tagged logger. Prints to stdout when [enableLog] is true.
+     * All messages are prefixed with `[KyvShield]`.
+     */
+    private fun log(message: String) {
+        if (enableLog) println("[KyvShield] $message")
+    }
+
+    /**
+     * Resize and compress an image using standard Java2D / ImageIO (no external deps).
+     *
+     * If the image width exceeds [imageMaxWidth], it is scaled down maintaining aspect ratio.
+     * The result is re-encoded as JPEG at [imageQuality]/100.
+     *
+     * @param data  raw image bytes
+     * @param label field name used in log messages
+     * @return processed image bytes, or the original bytes if processing fails
+     */
+    private fun processImage(data: ByteArray, label: String = "image"): ByteArray {
+        val originalKb = data.size / 1024
+        return try {
+            val src: BufferedImage = ImageIO.read(ByteArrayInputStream(data))
+                ?: run {
+                    log("Image $label: could not decode for processing — using original (${originalKb}KB)")
+                    return data
+                }
+
+            val origWidth = src.width
+            val origHeight = src.height
+
+            val toEncode: BufferedImage = if (origWidth > imageMaxWidth) {
+                val newWidth = imageMaxWidth
+                val newHeight = (origHeight.toDouble() * newWidth / origWidth).toInt()
+                val dst = BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB)
+                val g2d: Graphics2D = dst.createGraphics()
+                g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+                g2d.drawImage(src, 0, 0, newWidth, newHeight, null)
+                g2d.dispose()
+                dst
+            } else {
+                if (src.type != BufferedImage.TYPE_INT_RGB) {
+                    val rgb = BufferedImage(origWidth, origHeight, BufferedImage.TYPE_INT_RGB)
+                    val g2d = rgb.createGraphics()
+                    g2d.drawImage(src, 0, 0, null)
+                    g2d.dispose()
+                    rgb
+                } else src
+            }
+
+            val baos = ByteArrayOutputStream()
+            val writers = ImageIO.getImageWritersByFormatName("jpeg")
+            if (!writers.hasNext()) {
+                log("Image $label: no JPEG writer found — using original")
+                return data
+            }
+            val writer = writers.next()
+            val param = writer.defaultWriteParam
+            param.compressionMode = ImageWriteParam.MODE_EXPLICIT
+            param.compressionQuality = imageQuality / 100.0f
+            writer.output = MemoryCacheImageOutputStream(baos)
+            writer.write(null, IIOImage(toEncode, null, null), param)
+            writer.dispose()
+
+            val result = baos.toByteArray()
+            val finalKb = result.size / 1024
+
+            if (origWidth > imageMaxWidth) {
+                log("Image $label: ${originalKb}KB → resized ${imageMaxWidth}px → compressed ${imageQuality}% → ${finalKb}KB")
+            } else {
+                log("Image $label: ${originalKb}KB → compressed ${imageQuality}% → ${finalKb}KB")
+            }
+            result
+        } catch (e: Exception) {
+            log("Image $label: processing failed (${e.message}) — using original")
+            data
+        }
+    }
 
     /**
      * Executes an [HttpRequest] and returns the raw response body string.
@@ -246,20 +363,20 @@ class KyvShield(
             out.write(crlf.toByteArray())
         }
 
-        fun writeImageField(name: String, value: Any) {
-            val bytes = resolveImage(value)
-            val filename = when {
-                value is String && (value.startsWith("http://") || value.startsWith("https://")) -> {
-                    val path = runCatching { URI.create(value).path }.getOrNull() ?: ""
-                    val seg = path.substringAfterLast('/')
-                    seg.ifEmpty { "$name.jpg" }
-                }
-                value is String && !value.startsWith("data:image/")
-                        && (value.contains('/') || value.contains('\\') || value.matches(Regex(".*\\.\\w{2,5}$"))) -> {
-                    File(value).name
-                }
-                else -> "$name.jpg"
+        fun deriveFilename(name: String, value: Any): String = when {
+            value is String && (value.startsWith("http://") || value.startsWith("https://")) -> {
+                val urlPath = runCatching { URI.create(value).path }.getOrNull() ?: ""
+                val seg = urlPath.substringAfterLast('/')
+                seg.ifEmpty { "$name.jpg" }
             }
+            value is String && !value.startsWith("data:image/")
+                    && (value.contains('/') || value.contains('\\') || value.matches(Regex(".*\\.\\w{2,5}$"))) -> {
+                File(value).name
+            }
+            else -> "$name.jpg"
+        }
+
+        fun writeImageBytes(name: String, filename: String, bytes: ByteArray) {
             val mimeType = inferMimeTypeFromBytes(bytes)
             out.write("$dash$boundary$crlf".toByteArray())
             out.write(
@@ -296,9 +413,33 @@ class KyvShield(
         // kyc_identifier (optional)
         options.kycIdentifier?.let { writeField("kyc_identifier", it) }
 
-        // image files (any of: ByteArray, URL, data URI, base64, or file path)
-        options.images.forEach { (fieldName, value) ->
-            writeImageField(fieldName, value)
+        // image files — resolve + compress in parallel (max DEFAULT_MAX_CONCURRENT_COMPRESS)
+        if (options.images.isNotEmpty()) {
+            val semaphore = Semaphore(DEFAULT_MAX_CONCURRENT_COMPRESS)
+            val compressPool = Executors.newFixedThreadPool(
+                minOf(options.images.size, DEFAULT_MAX_CONCURRENT_COMPRESS)
+            )
+            data class ResolvedImage(val fieldName: String, val bytes: ByteArray, val filename: String)
+            val imageFutures = options.images.entries.map { (fieldName, value) ->
+                CompletableFuture.supplyAsync({
+                    semaphore.acquire()
+                    try {
+                        val raw = resolveImage(value, fieldName)
+                        val processed = processImage(raw, fieldName)
+                        ResolvedImage(fieldName, processed, deriveFilename(fieldName, value))
+                    } finally {
+                        semaphore.release()
+                    }
+                }, compressPool)
+            }
+            try {
+                val resolved = imageFutures.map { it.get() }
+                resolved.forEach { (fieldName, bytes, filename) ->
+                    writeImageBytes(fieldName, filename, bytes)
+                }
+            } finally {
+                compressPool.shutdown()
+            }
         }
 
         // terminal boundary
@@ -310,8 +451,11 @@ class KyvShield(
     /**
      * Resolves an image value ([ByteArray], URL string, data URI, bare base64,
      * or filesystem path) into raw bytes.
+     *
+     * @param value  the image value (ByteArray, URL, data URI, base64 string, or file path)
+     * @param label  field name used in log messages
      */
-    private fun resolveImage(value: Any): ByteArray {
+    private fun resolveImage(value: Any, label: String = "image"): ByteArray {
         // 1. Already raw bytes
         if (value is ByteArray) return value
 
@@ -320,6 +464,7 @@ class KyvShield(
 
         // 2. URL — fetch via HttpClient
         if (str.startsWith("http://") || str.startsWith("https://")) {
+            log("Downloading image from $str")
             val req = HttpRequest.newBuilder()
                 .uri(URI.create(str))
                 .GET()
@@ -343,13 +488,32 @@ class KyvShield(
         if (str.startsWith("data:image/")) {
             val commaIdx = str.indexOf(',')
             if (commaIdx == -1) throw KyvShieldException(message = "Invalid data URI for image")
-            return Base64.getDecoder().decode(str.substring(commaIdx + 1))
+            val b64 = str.substring(commaIdx + 1)
+            val sizeKb = (b64.length * 0.75 / 1024).toInt()
+            log("Decoding base64 image $label (${sizeKb}KB)")
+            return try {
+                Base64.getDecoder().decode(b64)
+            } catch (e: IllegalArgumentException) {
+                throw KyvShieldException(
+                    message = "Failed to decode base64 data URI for image \"$label\": ${e.message}",
+                    cause = e,
+                )
+            }
         }
 
         // 4. Bare base64 (no path separators, long, no extension)
         if (!str.contains('/') && !str.contains('\\')
             && str.length > 64 && !str.matches(Regex(".*\\.\\w{2,5}$"))) {
-            return Base64.getDecoder().decode(str)
+            val sizeKb = (str.length * 0.75 / 1024).toInt()
+            log("Decoding base64 image $label (${sizeKb}KB)")
+            return try {
+                Base64.getDecoder().decode(str)
+            } catch (e: IllegalArgumentException) {
+                throw KyvShieldException(
+                    message = "Failed to decode base64 image string for \"$label\": ${e.message}",
+                    cause = e,
+                )
+            }
         }
 
         // 5. Filesystem path

@@ -155,6 +155,47 @@ images: {
 
 ---
 
+### `kyv.verifyBatch(optionsList)`
+
+Submit up to 10 KYC verifications concurrently using `Promise.all`. Results are returned in the same order as the input array. Each entry is a `PromiseSettledResult` — check `status` to distinguish fulfilled from rejected entries. Images within each call are resolved in parallel (up to `DEFAULT_MAX_CONCURRENT_COMPRESS = 20` at a time).
+
+```typescript
+import { KyvShield } from '@kyvshield/rest-sdk';
+
+const kyv = new KyvShield('your-api-key');
+
+const results = await kyv.verifyBatch([
+  {
+    steps: ['recto', 'verso'],
+    target: 'SN-CIN',
+    kycIdentifier: 'user-001',
+    images: {
+      recto_center_document: './user1_recto.jpg',
+      verso_center_document: './user1_verso.jpg',
+    },
+  },
+  {
+    steps: ['selfie', 'recto'],
+    target: 'SN-CIN',
+    kycIdentifier: 'user-002',
+    images: {
+      selfie_center_face:    './user2_selfie.jpg',
+      recto_center_document: './user2_recto.jpg',
+    },
+  },
+]);
+
+for (const [i, result] of results.entries()) {
+  if (result.status === 'fulfilled') {
+    console.log(`[${i}] ${result.value.overall_status} — session ${result.value.session_id}`);
+  } else {
+    console.error(`[${i}] ERROR:`, result.reason);
+  }
+}
+```
+
+---
+
 ### `KyvShield.verifyWebhookSignature(payload, apiKey, signatureHeader)`
 
 Static method. Validates an incoming KyvShield webhook using HMAC-SHA256.

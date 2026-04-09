@@ -1,6 +1,17 @@
 // Package kyvshield provides a fully typed Go client for the KyvShield REST KYC API.
 package kyvshield
 
+// ─── SDK Constants ────────────────────────────────────────────────────────────
+
+// DefaultImageMaxWidth is the default maximum image width in pixels before resize.
+const DefaultImageMaxWidth = 1280
+
+// DefaultImageQuality is the default JPEG compression quality (0–100).
+const DefaultImageQuality = 90
+
+// DefaultMaxConcurrentCompress is the maximum number of images compressed in parallel.
+const DefaultMaxConcurrentCompress = 20
+
 // ─── Enums / String Constants ─────────────────────────────────────────────────
 
 // ChallengeMode controls the intensity of the liveness challenge.

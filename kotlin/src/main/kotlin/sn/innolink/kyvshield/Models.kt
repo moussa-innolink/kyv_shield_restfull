@@ -8,6 +8,17 @@ package sn.innolink.kyvshield
  * provided via explicit parameter names where helpful.
  */
 
+// ─── SDK Constants ────────────────────────────────────────────────────────────
+
+/** Default maximum image width in pixels before resize. */
+const val DEFAULT_IMAGE_MAX_WIDTH: Int = 1280
+
+/** Default JPEG compression quality (0–100). */
+const val DEFAULT_IMAGE_QUALITY: Int = 90
+
+/** Maximum number of images compressed in parallel. */
+const val DEFAULT_MAX_CONCURRENT_COMPRESS: Int = 20
+
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
 /** Challenge intensity mode */
@@ -19,9 +30,9 @@ enum class ChallengeMode(val value: String) {
     override fun toString(): String = value
 
     companion object {
+        /** Returns the matching [ChallengeMode] or [STANDARD] for unrecognised values. */
         fun fromString(value: String): ChallengeMode =
-            entries.firstOrNull { it.value == value }
-                ?: throw IllegalArgumentException("Unknown challenge mode: '$value'")
+            entries.firstOrNull { it.value == value } ?: STANDARD
     }
 }
 
@@ -34,9 +45,9 @@ enum class Step(val value: String) {
     override fun toString(): String = value
 
     companion object {
+        /** Returns the matching [Step] or [SELFIE] for unrecognised values. */
         fun fromString(value: String): Step =
-            entries.firstOrNull { it.value == value }
-                ?: throw IllegalArgumentException("Unknown step: '$value'")
+            entries.firstOrNull { it.value == value } ?: SELFIE
     }
 }
 
@@ -66,9 +77,9 @@ enum class OverallStatus(val value: String) {
     override fun toString(): String = value
 
     companion object {
+        /** Returns the matching [OverallStatus] or [REJECT] for unrecognised values. */
         fun fromString(value: String): OverallStatus =
-            entries.firstOrNull { it.value == value }
-                ?: throw IllegalArgumentException("Unknown overall status: '$value'")
+            entries.firstOrNull { it.value == value } ?: REJECT
     }
 }
 

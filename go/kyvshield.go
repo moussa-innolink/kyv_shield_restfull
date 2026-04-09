@@ -29,7 +29,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	_ "image/png"  // register PNG decoder
+	_ "image/gif"  // register GIF decoder
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -73,14 +79,43 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
+// WithImageMaxWidth sets the maximum image width in pixels.
+// Images wider than this will be resized down while maintaining aspect ratio.
+// Defaults to 1280.
+func WithImageMaxWidth(maxWidth int) Option {
+	return func(c *Client) {
+		c.imageMaxWidth = maxWidth
+	}
+}
+
+// WithImageQuality sets the JPEG compression quality (0–100).
+// Defaults to 90.
+func WithImageQuality(quality int) Option {
+	return func(c *Client) {
+		c.imageQuality = quality
+	}
+}
+
+// WithLogger enables [KyvShield] tagged logging to stderr.
+//
+//	client := kyvshield.NewClient(apiKey, kyvshield.WithLogger(true))
+func WithLogger(enabled bool) Option {
+	return func(c *Client) {
+		c.enableLog = enabled
+	}
+}
+
 // ─── Client ───────────────────────────────────────────────────────────────────
 
 // Client is the KyvShield API client. Create one with NewClient and reuse it
 // across requests; it is safe for concurrent use.
 type Client struct {
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
+	apiKey        string
+	baseURL       string
+	httpClient    *http.Client
+	imageMaxWidth int
+	imageQuality  int
+	enableLog     bool
 }
 
 // NewClient creates a new KyvShield API client authenticated with the given API key.
@@ -93,8 +128,11 @@ type Client struct {
 //	client := kyvshield.NewClient("your-api-key", kyvshield.WithBaseURL("http://localhost:8080"))
 func NewClient(apiKey string, opts ...Option) *Client {
 	c := &Client{
-		apiKey:  apiKey,
-		baseURL: defaultBaseURL,
+		apiKey:        apiKey,
+		baseURL:       defaultBaseURL,
+		imageMaxWidth: 1280,
+		imageQuality:  90,
+		enableLog:     true,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
@@ -102,6 +140,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+	c.logf("Initialized (baseUrl=%s, imageMaxWidth=%d, imageQuality=%d)", c.baseURL, c.imageMaxWidth, c.imageQuality)
 	return c
 }
 
@@ -114,6 +153,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 // must capture for each combination of step (document / selfie) and mode
 // (minimal / standard / strict).
 func (c *Client) GetChallenges(ctx context.Context) (*ChallengesResponse, error) {
+	c.logf("GET /api/v1/challenges...")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.baseURL+"/api/v1/challenges", nil)
 	if err != nil {
@@ -144,6 +184,7 @@ func (c *Client) GetChallenges(ctx context.Context) (*ChallengesResponse, error)
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("kyvshield: decode challenges response: %w", err)
 	}
+	c.logf("Challenges loaded")
 	return &result, nil
 }
 
@@ -170,7 +211,84 @@ func (c *Client) Verify(ctx context.Context, opts *VerifyOptions) (*KycResponse,
 		return nil, fmt.Errorf("kyvshield: VerifyOptions must not be nil")
 	}
 
-	// Build multipart body.
+	// ── Input validation ──────────────────────────────────────────────────────
+
+	if len(opts.Steps) == 0 {
+		return nil, fmt.Errorf("kyvshield: Steps must contain at least one step")
+	}
+	if opts.Target == "" {
+		return nil, fmt.Errorf("kyvshield: Target must not be empty")
+	}
+	if len(opts.Images) == 0 && len(opts.ImageBytes) == 0 {
+		return nil, fmt.Errorf("kyvshield: Images must contain at least one entry")
+	}
+
+	imageCount := len(opts.Images) + len(opts.ImageBytes)
+	c.logf("POST /api/v1/kyc/verify (steps=%v, target=%s, images=%d)", opts.Steps, opts.Target, imageCount)
+	startMs := time.Now()
+
+	// ── Parallel image resolution + compression (semaphore: max 20) ──────────
+
+	type resolvedImage struct {
+		fieldName string
+		filename  string
+		data      []byte
+		err       error
+	}
+
+	type imageEntry struct {
+		fieldName string
+		value     string // empty for ImageBytes entries
+		rawBytes  []byte // nil for Images entries
+	}
+
+	var entries []imageEntry
+	for fieldName, value := range opts.Images {
+		entries = append(entries, imageEntry{fieldName: fieldName, value: value})
+	}
+	for fieldName, raw := range opts.ImageBytes {
+		entries = append(entries, imageEntry{fieldName: fieldName, rawBytes: raw})
+	}
+
+	resolved := make([]resolvedImage, len(entries))
+	sem := make(chan struct{}, DefaultMaxConcurrentCompress)
+	var wgImgs sync.WaitGroup
+
+	for i, entry := range entries {
+		wgImgs.Add(1)
+		go func(idx int, e imageEntry) {
+			defer wgImgs.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			var raw []byte
+			var filename string
+			var err error
+
+			if e.rawBytes != nil {
+				raw = e.rawBytes
+				filename = e.fieldName + ".jpg"
+			} else {
+				raw, err = c.resolveImageWithLog(e.value, e.fieldName)
+				if err != nil {
+					resolved[idx] = resolvedImage{fieldName: e.fieldName, err: err}
+					return
+				}
+				filename = deriveFilename(e.value, e.fieldName)
+			}
+
+			processed, procErr := c.processImage(raw, e.fieldName)
+			if procErr != nil {
+				c.logf("Image %s: processing failed (%v) — using original", e.fieldName, procErr)
+				processed = raw
+			}
+			resolved[idx] = resolvedImage{fieldName: e.fieldName, filename: filename, data: processed}
+		}(i, entry)
+	}
+	wgImgs.Wait()
+
+	// ── Build multipart body ──────────────────────────────────────────────────
+
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -232,24 +350,13 @@ func (c *Client) Verify(ctx context.Context, opts *VerifyOptions) (*KycResponse,
 		}
 	}
 
-	// ── Image files (file path / URL / base64 / data URI) ────────────────────
+	// ── Attach pre-processed images ───────────────────────────────────────────
 
-	for fieldName, value := range opts.Images {
-		data, err := resolveImage(value)
-		if err != nil {
-			return nil, fmt.Errorf("kyvshield: resolve image for field %q: %w", fieldName, err)
+	for _, r := range resolved {
+		if r.err != nil {
+			return nil, fmt.Errorf("kyvshield: resolve image for field %q: %w", r.fieldName, r.err)
 		}
-		filename := deriveFilename(value, fieldName)
-		if err := attachBytes(mw, fieldName, filename, data); err != nil {
-			return nil, err
-		}
-	}
-
-	// ── Raw-bytes image map ───────────────────────────────────────────────────
-
-	for fieldName, data := range opts.ImageBytes {
-		filename := fieldName + ".jpg"
-		if err := attachBytes(mw, fieldName, filename, data); err != nil {
+		if err := attachBytes(mw, r.fieldName, r.filename, r.data); err != nil {
 			return nil, err
 		}
 	}
@@ -291,6 +398,8 @@ func (c *Client) Verify(ctx context.Context, opts *VerifyOptions) (*KycResponse,
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("kyvshield: decode verify response: %w", err)
 	}
+	elapsed := time.Since(startMs).Milliseconds()
+	c.logf("Verify complete: %s (%.2f) in %dms", result.OverallStatus, result.OverallConfidence, elapsed)
 	return &result, nil
 }
 
@@ -299,10 +408,11 @@ func (c *Client) Verify(ctx context.Context, opts *VerifyOptions) (*KycResponse,
 // VerifyBatch runs multiple KYC verifications concurrently using goroutines.
 // Results are returned in the same order as the input slice.
 // Maximum batch size is 10.
-func (c *Client) VerifyBatch(ctx context.Context, optsList []*VerifyOptions) []BatchResult {
+func (c *Client) VerifyBatch(ctx context.Context, optsList []*VerifyOptions) ([]BatchResult, error) {
 	if len(optsList) > 10 {
-		panic("kyvshield: batch size cannot exceed 10")
+		return nil, fmt.Errorf("kyvshield: batch size cannot exceed 10")
 	}
+	c.logf("Batch verify: %d requests...", len(optsList))
 
 	results := make([]BatchResult, len(optsList))
 	var wg sync.WaitGroup
@@ -321,7 +431,15 @@ func (c *Client) VerifyBatch(ctx context.Context, optsList []*VerifyOptions) []B
 	}
 
 	wg.Wait()
-	return results
+
+	passed := 0
+	for _, r := range results {
+		if r.Success {
+			passed++
+		}
+	}
+	c.logf("Batch complete: %d pass, %d reject", passed, len(results)-passed)
+	return results, nil
 }
 
 // ─── Webhook Signature Verification ──────────────────────────────────────────
@@ -352,6 +470,97 @@ func VerifyWebhookSignature(payload []byte, apiKey, signatureHeader string) bool
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
 
+// logf logs a tagged message when enableLog is true.
+// All messages are prefixed with [KyvShield].
+func (c *Client) logf(format string, args ...interface{}) {
+	if c.enableLog {
+		log.Printf("[KyvShield] "+format, args...)
+	}
+}
+
+// processImage resizes and JPEG-compresses image bytes using only the stdlib.
+//
+// Resolution order:
+//  1. Decode the image (JPEG, PNG, or GIF via registered decoders).
+//  2. If width > imageMaxWidth, resize using a simple nearest-neighbor algorithm.
+//  3. Encode as JPEG at imageQuality.
+//
+// If anything fails the original bytes are returned unchanged.
+func (c *Client) processImage(data []byte, label string) ([]byte, error) {
+	originalKb := len(data) / 1024
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		// Not a recognised image format (e.g. WebP) — return as-is
+		c.logf("Image %s: could not decode for processing (%v) — using original (%dKB)", label, err, originalKb)
+		return data, nil
+	}
+
+	bounds := img.Bounds()
+	origWidth := bounds.Dx()
+	origHeight := bounds.Dy()
+
+	var toEncode image.Image
+	if origWidth > c.imageMaxWidth {
+		newWidth := c.imageMaxWidth
+		newHeight := origHeight * newWidth / origWidth
+		dst := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
+		// Simple nearest-neighbor resize (no external deps)
+		for y := 0; y < newHeight; y++ {
+			for x := 0; x < newWidth; x++ {
+				srcX := x * origWidth / newWidth
+				srcY := y * origHeight / newHeight
+				r, g, b, a := img.At(bounds.Min.X+srcX, bounds.Min.Y+srcY).RGBA()
+				dst.SetRGBA(x, y, color.RGBA{
+					R: uint8(r >> 8),
+					G: uint8(g >> 8),
+					B: uint8(b >> 8),
+					A: uint8(a >> 8),
+				})
+			}
+		}
+		toEncode = dst
+	} else {
+		toEncode = img
+	}
+
+	var buf bytes.Buffer
+	opts := &jpeg.Options{Quality: c.imageQuality}
+	if err := jpeg.Encode(&buf, toEncode, opts); err != nil {
+		c.logf("Image %s: JPEG encode failed (%v) — using original", label, err)
+		return data, nil
+	}
+
+	result := buf.Bytes()
+	finalKb := len(result) / 1024
+
+	if origWidth > c.imageMaxWidth {
+		c.logf("Image %s: %dKB → resized %dpx → compressed %d%% → %dKB",
+			label, originalKb, c.imageMaxWidth, c.imageQuality, finalKb)
+	} else {
+		c.logf("Image %s: %dKB → compressed %d%% → %dKB",
+			label, originalKb, c.imageQuality, finalKb)
+	}
+	return result, nil
+}
+
+// resolveImageWithLog wraps resolveImage with download/decode log messages.
+func (c *Client) resolveImageWithLog(value, fieldName string) ([]byte, error) {
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		c.logf("Downloading image from %s", value)
+	} else if strings.HasPrefix(value, "data:image/") {
+		commaIdx := strings.Index(value, ",")
+		if commaIdx != -1 {
+			sizeKb := int(float64(len(value)-commaIdx-1)*0.75) / 1024
+			c.logf("Decoding base64 image %s (%dKB)", fieldName, sizeKb)
+		}
+	} else if !strings.ContainsAny(value, "/\\") && len(value) > 64 {
+		sizeKb := int(float64(len(value))*0.75) / 1024
+		c.logf("Decoding base64 image %s (%dKB)", fieldName, sizeKb)
+	}
+	return resolveImage(value)
+}
+
 // setAuthHeader attaches the API key authentication header to the request.
 func (c *Client) setAuthHeader(req *http.Request) {
 	req.Header.Set("X-API-Key", c.apiKey)
@@ -376,7 +585,7 @@ func resolveImage(value string) ([]byte, error) {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("download image from URL %q: HTTP %d", value, resp.StatusCode)
 		}
-		return io.ReadAll(resp.Body)
+		return io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
 	}
 
 	// 2. Data URI
@@ -455,38 +664,6 @@ func mimeTypeFromBytes(data []byte) string {
 		}
 	}
 	return "image/jpeg"
-}
-
-// attachFile opens a local file and writes it as a multipart file field.
-// Kept for internal use where we already know we have a plain path.
-// The content-type is inferred from the file extension (.jpg/.jpeg → image/jpeg,
-// .png → image/png, everything else → application/octet-stream).
-func attachFile(mw *multipart.Writer, fieldName, filePath string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("kyvshield: open image file %q for field %q: %w", filePath, fieldName, err)
-	}
-	defer f.Close()
-
-	contentType := mimeTypeFromPath(filePath)
-	filename := filepath.Base(filePath)
-
-	// Create a custom MIME part so we can set the content-type.
-	h := make(map[string][]string)
-	h["Content-Disposition"] = []string{
-		fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename),
-	}
-	h["Content-Type"] = []string{contentType}
-
-	part, err := mw.CreatePart(h)
-	if err != nil {
-		return fmt.Errorf("kyvshield: create multipart part for field %q: %w", fieldName, err)
-	}
-
-	if _, err := io.Copy(part, f); err != nil {
-		return fmt.Errorf("kyvshield: copy file data for field %q: %w", fieldName, err)
-	}
-	return nil
 }
 
 // mimeTypeFromPath returns a MIME type based on the file extension.

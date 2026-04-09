@@ -105,6 +105,45 @@ client := kyvshield.NewClient("key", kyvshield.WithHTTPClient(myClient))
 
 `POST /api/v1/kyc/verify` — submits images and options for a full KYC run.
 
+### `VerifyBatch(ctx context.Context, optsList []*VerifyOptions) ([]BatchResult, error)`
+
+Runs up to 10 KYC verifications concurrently. Results are returned in the same order as the input slice. Images within each verification are also compressed in parallel (up to `DefaultMaxConcurrentCompress = 20` goroutines).
+
+```go
+batch := []*kyvshield.VerifyOptions{
+    {
+        Steps:         []string{"recto", "verso"},
+        Target:        "SN-CIN",
+        KycIdentifier: "user-001",
+        Images: map[string]string{
+            "recto_center_document": "/path/to/user1_recto.jpg",
+            "verso_center_document": "/path/to/user1_verso.jpg",
+        },
+    },
+    {
+        Steps:         []string{"selfie", "recto"},
+        Target:        "SN-CIN",
+        KycIdentifier: "user-002",
+        Images: map[string]string{
+            "selfie_center_face":    "/path/to/user2_selfie.jpg",
+            "recto_center_document": "/path/to/user2_recto.jpg",
+        },
+    },
+}
+
+results, err := client.VerifyBatch(context.Background(), batch)
+if err != nil {
+    log.Fatal(err)
+}
+for i, r := range results {
+    if r.Success {
+        fmt.Printf("[%d] %s — confidence %.2f\n", i, r.Result.OverallStatus, r.Result.OverallConfidence)
+    } else {
+        fmt.Printf("[%d] ERROR: %v\n", i, r.Error)
+    }
+}
+```
+
 ### `VerifyWebhookSignature(payload []byte, apiKey, signatureHeader string) bool`
 
 Validates an incoming webhook callback signed with HMAC-SHA256.

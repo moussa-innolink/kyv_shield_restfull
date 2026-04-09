@@ -112,6 +112,44 @@ if (result.getFaceVerification() != null) {
 }
 ```
 
+### `List<BatchResult> verifyBatch(List<VerifyOptions> optionsList)`
+
+Submit up to 10 KYC verifications concurrently using a dedicated `ExecutorService`. Results are returned in the same order as the input list. The executor is shut down in a `finally` block. Images within each verification are compressed in parallel (up to `DEFAULT_MAX_CONCURRENT_COMPRESS = 20`).
+
+```java
+KyvShield kyv = new KyvShield("your-api-key");
+
+List<VerifyOptions> batch = List.of(
+    new VerifyOptions.Builder()
+        .steps(Step.RECTO, Step.VERSO)
+        .target("SN-CIN")
+        .kycIdentifier("user-001")
+        .addImage("recto_center_document", "/path/to/user1_recto.jpg")
+        .addImage("verso_center_document", "/path/to/user1_verso.jpg")
+        .build(),
+    new VerifyOptions.Builder()
+        .steps(Step.SELFIE, Step.RECTO)
+        .target("SN-CIN")
+        .kycIdentifier("user-002")
+        .addImage("selfie_center_face",    "/path/to/user2_selfie.jpg")
+        .addImage("recto_center_document", "/path/to/user2_recto.jpg")
+        .build()
+);
+
+List<BatchResult> results = kyv.verifyBatch(batch);
+
+for (int i = 0; i < results.size(); i++) {
+    BatchResult r = results.get(i);
+    if (r.isSuccess()) {
+        System.out.println("[" + i + "] " + r.getResult().getOverallStatus());
+    } else {
+        System.out.println("[" + i + "] ERROR: " + r.getError());
+    }
+}
+```
+
+---
+
 ### `static boolean verifyWebhookSignature(byte[] payload, String apiKey, String signatureHeader)`
 
 Verifies an HMAC-SHA256 webhook signature sent in the `X-KyvShield-Signature` header.

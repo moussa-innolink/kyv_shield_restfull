@@ -3,6 +3,7 @@ sn/innolink/kyvshield/KyvShieldException.class
 sn/innolink/kyvshield/model/FaceVerification.class
 sn/innolink/kyvshield/model/ChallengeMode.class
 sn/innolink/kyvshield/model/ExtractionField.class
+sn/innolink/kyvshield/model/BatchResult.class
 sn/innolink/kyvshield/model/VerifyOptions.class
 sn/innolink/kyvshield/model/LivenessResult.class
 sn/innolink/kyvshield/model/Step.class
