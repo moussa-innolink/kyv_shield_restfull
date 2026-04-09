@@ -1,0 +1,45 @@
+{
+  "name": "@kyvshield/rest-sdk",
+  "version": "1.0.0",
+  "description": "Fully typed Node.js / TypeScript SDK for the KyvShield KYC REST API",
+  "author": "KyvShield",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean",
+    "test": "npx ts-node --esm test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "kyc",
+    "kyvshield",
+    "identity-verification",
+    "liveness",
+    "ocr",
+    "sdk"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

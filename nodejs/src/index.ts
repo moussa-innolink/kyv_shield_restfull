@@ -1,0 +1,392 @@
+/**
+ * KyvShield REST SDK — Node.js / TypeScript
+ *
+ * A fully typed SDK for the KyvShield KYC REST API.
+ * Requires Node.js 18+ (uses native fetch and crypto).
+ *
+ * @example
+ * ```ts
+ * import { KyvShield } from '@kyvshield/rest-sdk';
+ *
+ * const kyv = new KyvShield('your-api-key');
+ *
+ * const result = await kyv.verify({
+ *   steps: ['selfie', 'recto', 'verso'],
+ *   target: 'SN-CIN',
+ *   language: 'fr',
+ *   challengeMode: 'standard',
+ *   requireFaceMatch: true,
+ *   images: {
+ *     selfie_center_face:    './selfie.jpg',
+ *     recto_center_document: './recto.jpg',
+ *     verso_center_document: './verso.jpg',
+ *   },
+ * });
+ *
+ * console.log(result.overall_status); // 'pass' | 'reject'
+ * ```
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+
+import type {
+  ChallengesResponse,
+  KycResponse,
+  KyvShieldErrorDetails,
+  VerifyOptions,
+} from './types.js';
+
+export * from './types.js';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const DEFAULT_BASE_URL = 'https://kyvshield-naruto.innolinkcloud.com';
+const API_VERSION = '/api/v1';
+
+// ─── Error class ─────────────────────────────────────────────────────────────
+
+/**
+ * Error thrown when the KyvShield API returns a non-2xx response
+ * or when a request cannot be completed.
+ */
+export class KyvShieldError extends Error {
+  public readonly statusCode?: number;
+  public readonly body?: unknown;
+
+  constructor(message: string, details?: KyvShieldErrorDetails) {
+    super(message);
+    this.name = 'KyvShieldError';
+    this.statusCode = details?.statusCode;
+    this.body = details?.body;
+  }
+}
+
+// ─── SDK Class ────────────────────────────────────────────────────────────────
+
+/**
+ * KyvShield SDK client.
+ *
+ * Instantiate once and reuse across your application.
+ */
+export class KyvShield {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+
+  /**
+   * Create a new KyvShield client.
+   *
+   * @param apiKey  - Your KyvShield API key (sent as the `X-API-Key` header).
+   * @param baseUrl - Optional base URL override. Defaults to the production endpoint.
+   *
+   * @example
+   * ```ts
+   * // Production
+   * const kyv = new KyvShield('your-api-key');
+   *
+   * // Local / staging
+   * const kyv = new KyvShield('your-api-key', 'http://localhost:8080');
+   * ```
+   */
+  constructor(apiKey: string, baseUrl: string = DEFAULT_BASE_URL) {
+    if (!apiKey || apiKey.trim() === '') {
+      throw new KyvShieldError('apiKey must be a non-empty string');
+    }
+    this.apiKey = apiKey;
+    // Normalise: remove trailing slash so we can always append '/api/v1/...'
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
+  }
+
+  // ── Public methods ──────────────────────────────────────────────────────────
+
+  /**
+   * Retrieve the list of available challenges for each mode and step type.
+   *
+   * Useful for dynamically building the image map to pass to {@link verify}.
+   *
+   * @returns A {@link ChallengesResponse} object describing all available challenges.
+   *
+   * @example
+   * ```ts
+   * const { challenges } = await kyv.getChallenges();
+   * console.log(challenges.selfie.standard);
+   * // ['center_face', 'close_eyes', 'turn_left', 'turn_right']
+   * ```
+   */
+  async getChallenges(): Promise<ChallengesResponse> {
+    const url = `${this.baseUrl}${API_VERSION}/challenges`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.buildHeaders(),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    await this.assertOk(response);
+    return response.json() as Promise<ChallengesResponse>;
+  }
+
+  /**
+   * Submit a KYC verification request.
+   *
+   * The SDK reads each image from disk, packages everything as a
+   * `multipart/form-data` request, and returns the fully typed response.
+   *
+   * @param options - Verification options. See {@link VerifyOptions} for full documentation.
+   * @returns A {@link KycResponse} with per-step results and an overall decision.
+   *
+   * @throws {@link KyvShieldError} on HTTP errors or missing image files.
+   *
+   * @example
+   * ```ts
+   * const result = await kyv.verify({
+   *   steps: ['selfie', 'recto'],
+   *   target: 'SN-CIN',
+   *   language: 'en',
+   *   challengeMode: 'minimal',
+   *   requireFaceMatch: true,
+   *   images: {
+   *     selfie_center_face:    './selfie.jpg',
+   *     recto_center_document: './recto.jpg',
+   *   },
+   * });
+   *
+   * if (result.overall_status === 'pass') {
+   *   console.log('Verification passed!', result.session_id);
+   * } else {
+   *   console.warn('Verification rejected', result.steps.map(s => s.user_messages));
+   * }
+   * ```
+   */
+  async verify(options: VerifyOptions): Promise<KycResponse> {
+    this.validateVerifyOptions(options);
+
+    const { body, contentType } = this.buildMultipartBody(options);
+    const url = `${this.baseUrl}${API_VERSION}/kyc/verify`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': this.apiKey,
+        'Content-Type': contentType,
+      },
+      body,
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    await this.assertOk(response);
+    return response.json() as Promise<KycResponse>;
+  }
+
+  /**
+   * Submit multiple KYC verification requests concurrently.
+   * All requests run in parallel; results are settled (fulfilled or rejected).
+   *
+   * @param optionsList - Array of VerifyOptions (max 10 entries).
+   * @returns Array of PromiseSettledResult in the same order as the input.
+   *
+   * @throws {@link KyvShieldError} if the batch size exceeds 10.
+   */
+  async verifyBatch(optionsList: VerifyOptions[]): Promise<PromiseSettledResult<KycResponse>[]> {
+    if (optionsList.length > 10) {
+      throw new KyvShieldError('Batch size cannot exceed 10');
+    }
+    return Promise.allSettled(optionsList.map(opts => this.verify(opts)));
+  }
+
+  /**
+   * Verify an incoming webhook signature.
+   *
+   * KyvShield signs webhook payloads with HMAC-SHA256 using your API key.
+   * Call this before processing any webhook to confirm it came from KyvShield.
+   *
+   * @param payload         - Raw request body as a `Buffer`.
+   * @param apiKey          - Your KyvShield API key (same one used to create the client).
+   * @param signatureHeader - Value of the `X-KyvShield-Signature` header sent with the webhook.
+   * @returns `true` if the signature is valid, `false` otherwise.
+   *
+   * @example
+   * ```ts
+   * // Express example
+   * app.post('/webhook', express.raw({ type: '*\/*' }), (req, res) => {
+   *   const valid = KyvShield.verifyWebhookSignature(
+   *     req.body,
+   *     process.env.KYVSHIELD_API_KEY!,
+   *     req.headers['x-kyvshield-signature'] as string,
+   *   );
+   *
+   *   if (!valid) return res.status(401).send('Invalid signature');
+   *
+   *   // process webhook ...
+   *   res.sendStatus(200);
+   * });
+   * ```
+   */
+  static verifyWebhookSignature(
+    payload: Buffer,
+    apiKey: string,
+    signatureHeader: string,
+  ): boolean {
+    if (!payload || !apiKey || !signatureHeader) return false;
+
+    const expected = crypto
+      .createHmac('sha256', apiKey)
+      .update(payload)
+      .digest('hex');
+
+    // Use timingSafeEqual to prevent timing attacks
+    try {
+      const expectedBuf = Buffer.from(expected, 'hex');
+      // Strip an optional 'sha256=' prefix the server might prepend
+      const incomingSig = signatureHeader.startsWith('sha256=')
+        ? signatureHeader.slice(7)
+        : signatureHeader;
+      const incomingBuf = Buffer.from(incomingSig, 'hex');
+
+      if (expectedBuf.length !== incomingBuf.length) return false;
+      return crypto.timingSafeEqual(expectedBuf, incomingBuf);
+    } catch {
+      return false;
+    }
+  }
+
+  // ── Private helpers ─────────────────────────────────────────────────────────
+
+  /** Build the common headers used by all non-multipart requests. */
+  private buildHeaders(): Record<string, string> {
+    return {
+      'X-API-Key': this.apiKey,
+      Accept: 'application/json',
+    };
+  }
+
+  /**
+   * Validate required fields in {@link VerifyOptions} before sending.
+   * Throws a descriptive {@link KyvShieldError} on the first problem found.
+   */
+  private validateVerifyOptions(options: VerifyOptions): void {
+    if (!options.steps || options.steps.length === 0) {
+      throw new KyvShieldError('VerifyOptions.steps must contain at least one step');
+    }
+    if (!options.target || options.target.trim() === '') {
+      throw new KyvShieldError('VerifyOptions.target must be a non-empty string');
+    }
+    if (!options.images || Object.keys(options.images).length === 0) {
+      throw new KyvShieldError('VerifyOptions.images must contain at least one entry');
+    }
+
+    // Validate that all image files exist on disk
+    for (const [key, filePath] of Object.entries(options.images)) {
+      const resolved = path.resolve(filePath);
+      if (!fs.existsSync(resolved)) {
+        throw new KyvShieldError(
+          `Image file for "${key}" not found: ${resolved}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Build a native `multipart/form-data` body from {@link VerifyOptions}.
+   *
+   * Constructs the multipart body manually using `Buffer.concat` without any
+   * external dependency. Returns the binary body and the Content-Type header
+   * value (which includes the boundary).
+   */
+  private buildMultipartBody(options: VerifyOptions): { body: Buffer; contentType: string } {
+    const boundary = crypto.randomUUID().replace(/-/g, '');
+    const CRLF = '\r\n';
+    const parts: Buffer[] = [];
+
+    const textPart = (name: string, value: string): Buffer => {
+      const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}`;
+      return Buffer.concat([Buffer.from(header), Buffer.from(value, 'utf8'), Buffer.from(CRLF)]);
+    };
+
+    const filePart = (name: string, filename: string, mimeType: string, data: Buffer): Buffer => {
+      const header =
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="${name}"; filename="${filename}"${CRLF}` +
+        `Content-Type: ${mimeType}${CRLF}${CRLF}`;
+      return Buffer.concat([Buffer.from(header), data, Buffer.from(CRLF)]);
+    };
+
+    // ── Text fields ─────────────────────────────────────────────────────────
+
+    parts.push(textPart('steps', JSON.stringify(options.steps)));
+    parts.push(textPart('target', options.target));
+    parts.push(textPart('language', options.language ?? 'fr'));
+    parts.push(textPart('challenge_mode', options.challengeMode ?? 'standard'));
+
+    if (options.selfieChallengeMode !== undefined) {
+      parts.push(textPart('selfie_challenge_mode', options.selfieChallengeMode));
+    }
+    if (options.rectoChallengeMode !== undefined) {
+      parts.push(textPart('recto_challenge_mode', options.rectoChallengeMode));
+    }
+    if (options.versoChallengeMode !== undefined) {
+      parts.push(textPart('verso_challenge_mode', options.versoChallengeMode));
+    }
+
+    parts.push(textPart('require_face_match', options.requireFaceMatch === true ? 'true' : 'false'));
+
+    if (options.kycIdentifier !== undefined) {
+      parts.push(textPart('kyc_identifier', options.kycIdentifier));
+    }
+
+    // ── Image files ─────────────────────────────────────────────────────────
+
+    for (const [key, filePath] of Object.entries(options.images)) {
+      const resolved = path.resolve(filePath);
+      const data = fs.readFileSync(resolved);
+      const filename = path.basename(resolved);
+      const mimeType = this.guessMimeType(filename);
+      parts.push(filePart(key, filename, mimeType, data));
+    }
+
+    // ── Closing boundary ────────────────────────────────────────────────────
+
+    parts.push(Buffer.from(`--${boundary}--${CRLF}`));
+
+    return {
+      body: Buffer.concat(parts),
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+
+  /**
+   * Throw a {@link KyvShieldError} when the HTTP response is not successful (2xx).
+   * Tries to parse JSON error details from the body when available.
+   */
+  private async assertOk(response: Response): Promise<void> {
+    if (response.ok) return;
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = await response.text().catch(() => undefined);
+    }
+
+    throw new KyvShieldError(
+      `KyvShield API error ${response.status}: ${response.statusText}`,
+      { statusCode: response.status, body },
+    );
+  }
+
+  /** Return a MIME type based on file extension. Defaults to `image/jpeg`. */
+  private guessMimeType(filename: string): string {
+    const ext = path.extname(filename).toLowerCase();
+    const map: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif',
+    };
+    return map[ext] ?? 'image/jpeg';
+  }
+}
+
+export default KyvShield;

@@ -1,0 +1,352 @@
+package sn.innolink.kyvshield
+
+/**
+ * KyvShield Kotlin SDK — Data Models
+ *
+ * All data classes represent the exact JSON contract of the KyvShield REST API.
+ * Field names follow the API's snake_case JSON keys; idiomatic Kotlin names are
+ * provided via explicit parameter names where helpful.
+ */
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+/** Challenge intensity mode */
+enum class ChallengeMode(val value: String) {
+    MINIMAL("minimal"),
+    STANDARD("standard"),
+    STRICT("strict");
+
+    override fun toString(): String = value
+
+    companion object {
+        fun fromString(value: String): ChallengeMode =
+            entries.firstOrNull { it.value == value }
+                ?: throw IllegalArgumentException("Unknown challenge mode: '$value'")
+    }
+}
+
+/** Verification step type */
+enum class Step(val value: String) {
+    SELFIE("selfie"),
+    RECTO("recto"),
+    VERSO("verso");
+
+    override fun toString(): String = value
+
+    companion object {
+        fun fromString(value: String): Step =
+            entries.firstOrNull { it.value == value }
+                ?: throw IllegalArgumentException("Unknown step: '$value'")
+    }
+}
+
+/** Supported document target types */
+enum class DocumentTarget(val value: String) {
+    SN_CIN("SN-CIN"),
+    SN_PASSPORT("SN-PASSPORT"),
+    SN_DRIVER_LICENCE("SN-DRIVER-LICENCE");
+
+    override fun toString(): String = value
+}
+
+/** Supported response languages */
+enum class Language(val value: String) {
+    FRENCH("fr"),
+    ENGLISH("en"),
+    WOLOF("wo");
+
+    override fun toString(): String = value
+}
+
+/** Overall verification outcome */
+enum class OverallStatus(val value: String) {
+    PASS("pass"),
+    REJECT("reject");
+
+    override fun toString(): String = value
+
+    companion object {
+        fun fromString(value: String): OverallStatus =
+            entries.firstOrNull { it.value == value }
+                ?: throw IllegalArgumentException("Unknown overall status: '$value'")
+    }
+}
+
+/** Qualitative confidence descriptor returned inside LivenessResult */
+enum class ConfidenceLevel(val value: String) {
+    HIGH("HIGH"),
+    MEDIUM("MEDIUM"),
+    LOW("LOW");
+
+    override fun toString(): String = value
+
+    companion object {
+        fun fromString(value: String): ConfidenceLevel =
+            entries.firstOrNull { it.value.equals(value, ignoreCase = true) }
+                ?: throw IllegalArgumentException("Unknown confidence level: '$value'")
+    }
+}
+
+// ─── Challenges ──────────────────────────────────────────────────────────────
+
+/**
+ * Available challenges grouped by intensity for a single asset type
+ * (document or selfie).
+ */
+data class ChallengeModeMap(
+    /** Challenges required at minimal intensity */
+    val minimal: List<String>,
+    /** Challenges required at standard intensity */
+    val standard: List<String>,
+    /** Challenges required at strict intensity */
+    val strict: List<String>,
+)
+
+/**
+ * Challenges block inside [ChallengesResponse].
+ */
+data class ChallengesBlock(
+    /** Challenges applicable to document steps (recto / verso) */
+    val document: ChallengeModeMap,
+    /** Challenges applicable to selfie steps */
+    val selfie: ChallengeModeMap,
+)
+
+/**
+ * Full response from `GET /api/v1/challenges`.
+ */
+data class ChallengesResponse(
+    /** Whether the API call succeeded */
+    val success: Boolean,
+    /** The challenges configuration */
+    val challenges: ChallengesBlock,
+)
+
+// ─── Extraction ──────────────────────────────────────────────────────────────
+
+/**
+ * A single extracted text field from a document (OCR output).
+ */
+data class ExtractionField(
+    /** Machine-readable field key, e.g. `"first_name"` */
+    val key: String,
+    /** Key as used in the document specification */
+    val documentKey: String,
+    /** Human-readable label in the session language */
+    val label: String,
+    /** Extracted value */
+    val value: String,
+    /** Display ordering hint — lower value means higher priority */
+    val displayPriority: Int,
+    /** Optional icon identifier for UI rendering (may be null) */
+    val icon: String?,
+)
+
+/**
+ * A photo extracted from a document image (face crop from CIN / passport).
+ */
+data class ExtractedPhoto(
+    /** Base-64-encoded JPEG image data */
+    val image: String,
+    /** Model confidence for this extraction (0–1) */
+    val confidence: Double,
+    /** Bounding box `[x, y, width, height]` in pixels */
+    val bbox: List<Double>,
+    /** Area of the bounding box in pixels² */
+    val area: Double,
+    /** Width of the extracted region in pixels */
+    val width: Int,
+    /** Height of the extracted region in pixels */
+    val height: Int,
+)
+
+// ─── Step Result ─────────────────────────────────────────────────────────────
+
+/**
+ * Liveness sub-result for a single verification step.
+ */
+data class LivenessResult(
+    /** Whether the subject / document is considered live / physical */
+    val isLive: Boolean,
+    /** Liveness score (0–1) */
+    val score: Double,
+    /** Qualitative confidence descriptor */
+    val confidence: ConfidenceLevel,
+)
+
+/**
+ * Authenticity and fraud sub-result for a single verification step.
+ */
+data class VerificationResult(
+    /** Whether the document / selfie is considered authentic */
+    val isAuthentic: Boolean,
+    /** Confidence of the authenticity decision (0–1) */
+    val confidence: Double,
+    /** List of checks that passed */
+    val checksPassed: List<String>,
+    /** Detected fraud indicators (non-empty only when fraud suspected) */
+    val fraudIndicators: List<String>,
+    /** Non-blocking warnings */
+    val warnings: List<String>,
+    /** Blocking issues that caused a REJECT */
+    val issues: List<String>,
+)
+
+/**
+ * Result for a single verification step.
+ *
+ * Optional fields are present only for relevant step types:
+ * - [alignedDocument], [extraction], [extractedPhotos] — document steps (recto / verso)
+ * - [capturedImage] — selfie step only
+ */
+data class StepResult(
+    /** Zero-based index of this step within the submitted steps array */
+    val stepIndex: Int,
+    /** Type of this step */
+    val stepType: Step,
+    /** Whether this step succeeded overall */
+    val success: Boolean,
+    /** Server-side processing time for this step in milliseconds */
+    val processingTimeMs: Int,
+    /** Liveness detection sub-result */
+    val liveness: LivenessResult,
+    /** Authenticity / fraud sub-result */
+    val verification: VerificationResult,
+    /** Localised messages intended for display to the end-user */
+    val userMessages: List<String>,
+    // ── Document steps only ──────────────────────────────────────────────────
+    /** Base-64-encoded aligned/deskewed document image (document steps only) */
+    val alignedDocument: String?,
+    /** Extracted text fields (document steps only) */
+    val extraction: List<ExtractionField>?,
+    /** Extracted photos from the document, e.g. the face photo on a CIN */
+    val extractedPhotos: List<ExtractedPhoto>?,
+    // ── Selfie step only ─────────────────────────────────────────────────────
+    /** Base-64-encoded captured selfie image (selfie step only) */
+    val capturedImage: String?,
+)
+
+// ─── Face Verification ───────────────────────────────────────────────────────
+
+/**
+ * Cross-step face-match result.
+ * Present in [KycResponse] only when `requireFaceMatch` was `true`.
+ */
+data class FaceVerification(
+    /** Whether the selfie face matches the document face */
+    val isMatch: Boolean,
+    /** Cosine similarity score (0–100) */
+    val similarityScore: Double,
+)
+
+// ─── KYC Response ────────────────────────────────────────────────────────────
+
+/**
+ * Top-level response from `POST /api/v1/kyc/verify`.
+ */
+data class KycResponse(
+    /** Whether the API call itself succeeded */
+    val success: Boolean,
+    /** Unique session identifier for this verification run */
+    val sessionId: String,
+    /** Aggregated pass / reject decision across all steps */
+    val overallStatus: OverallStatus,
+    /** Aggregated confidence score (0–1) */
+    val overallConfidence: Double,
+    /** Total server-side processing time in milliseconds */
+    val processingTimeMs: Int,
+    /** Face-match result (present when requireFaceMatch was true) */
+    val faceVerification: FaceVerification?,
+    /** Per-step results in submission order */
+    val steps: List<StepResult>,
+)
+
+// ─── Batch Result ─────────────────────────────────────────────────────────────
+
+/**
+ * Holds the outcome of a single entry in a [KyvShield.verifyBatch] call.
+ */
+data class BatchResult(
+    /** Whether this individual verification succeeded */
+    val success: Boolean,
+    /** The KYC response when [success] is `true` */
+    val result: KycResponse?,
+    /** The error message when [success] is `false` */
+    val error: String?,
+)
+
+// ─── Verify Options ──────────────────────────────────────────────────────────
+
+/**
+ * Options for [KyvShield.verify].
+ *
+ * ```kotlin
+ * val options = VerifyOptions(
+ *     steps = listOf(Step.SELFIE, Step.RECTO, Step.VERSO),
+ *     target = "SN-CIN",
+ *     language = Language.FRENCH,
+ *     challengeMode = ChallengeMode.STANDARD,
+ *     requireFaceMatch = true,
+ *     images = mapOf(
+ *         "selfie_center_face"    to "/path/to/selfie.jpg",
+ *         "recto_center_document" to "/path/to/recto.jpg",
+ *         "verso_center_document" to "/path/to/verso.jpg",
+ *     ),
+ * )
+ * ```
+ */
+data class VerifyOptions(
+    /**
+     * Ordered list of steps to execute.
+     * Example: `listOf(Step.SELFIE, Step.RECTO, Step.VERSO)`
+     */
+    val steps: List<Step>,
+
+    /**
+     * Document type to verify against.
+     * Can be a [DocumentTarget] enum value or any custom string.
+     * Example: `"SN-CIN"`
+     */
+    val target: String,
+
+    /**
+     * Language for user-facing messages in the response.
+     * Defaults to [Language.FRENCH].
+     */
+    val language: Language = Language.FRENCH,
+
+    /**
+     * Global fallback challenge mode applied to all steps unless overridden.
+     * Defaults to [ChallengeMode.STANDARD].
+     */
+    val challengeMode: ChallengeMode = ChallengeMode.STANDARD,
+
+    /**
+     * Per-step challenge mode overrides keyed by step name.
+     * Keys are `"selfie"`, `"recto"`, or `"verso"`.
+     * Example: `mapOf("selfie" to ChallengeMode.MINIMAL, "recto" to ChallengeMode.STRICT)`
+     */
+    val stepChallengeModes: Map<String, ChallengeMode>? = null,
+
+    /**
+     * Whether to perform a cross-step face match between selfie and document photo.
+     * Defaults to `false`.
+     */
+    val requireFaceMatch: Boolean = false,
+
+    /**
+     * Optional caller-provided identifier for correlating sessions in your system.
+     */
+    val kycIdentifier: String? = null,
+
+    /**
+     * Map of image files to submit.
+     * Keys follow the pattern `{step}_{challenge}`, e.g.:
+     * - `"selfie_center_face"`
+     * - `"recto_center_document"`
+     * - `"recto_tilt_left"`
+     *
+     * Values are absolute file-system paths to JPEG/PNG images.
+     */
+    val images: Map<String, String>,
+)

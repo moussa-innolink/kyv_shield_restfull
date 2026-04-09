@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="sn.innolink.kyvshield.KyvShieldTest" time="23.984" tests="22" errors="0" skipped="0" failures="0">
+  <properties>
+    <property name="java.specification.version" value="21"/>
+    <property name="sun.jnu.encoding" value="UTF-8"/>
+    <property name="java.class.path" value="/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/test-classes:/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/classes:/Users/macbookpro/.m2/repository/org/json/json/20240303/json-20240303.jar:/Users/macbookpro/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar:/Users/macbookpro/.m2/repository/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar:"/>
+    <property name="java.vm.vendor" value="Amazon.com Inc."/>
+    <property name="sun.arch.data.model" value="64"/>
+    <property name="java.vendor.url" value="https://aws.amazon.com/corretto/"/>
+    <property name="os.name" value="Mac OS X"/>
+    <property name="java.vm.specification.version" value="21"/>
+    <property name="sun.java.launcher" value="SUN_STANDARD"/>
+    <property name="user.country" value="SN"/>
+    <property name="sun.boot.library.path" value="/Users/macbookpro/.sdkman/candidates/java/21.0.8-amzn/lib"/>
+    <property name="sun.java.command" value="/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/surefire/surefirebooter-20260409001539849_3.jar /Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/surefire 2026-04-09T00-15-39_651-jvmRun1 surefire-20260409001539849_1tmp surefire_0-20260409001539849_2tmp"/>
+    <property name="http.nonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
+    <property name="jdk.debug" value="release"/>
+    <property name="surefire.test.class.path" value="/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/test-classes:/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/classes:/Users/macbookpro/.m2/repository/org/json/json/20240303/json-20240303.jar:/Users/macbookpro/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar:/Users/macbookpro/.m2/repository/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar:"/>
+    <property name="sun.cpu.endian" value="little"/>
+    <property name="user.home" value="/Users/macbookpro"/>
+    <property name="user.language" value="fr"/>
+    <property name="java.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.version.date" value="2025-07-15"/>
+    <property name="java.home" value="/Users/macbookpro/.sdkman/candidates/java/21.0.8-amzn"/>
+    <property name="file.separator" value="/"/>
+    <property name="basedir" value="/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java"/>
+    <property name="java.vm.compressedOopsMode" value="Zero based"/>
+    <property name="line.separator" value="&#10;"/>
+    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.specification.name" value="Java Platform API Specification"/>
+    <property name="apple.awt.application.name" value="ForkedBooter"/>
+    <property name="surefire.real.class.path" value="/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java/target/surefire/surefirebooter-20260409001539849_3.jar"/>
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="ftp.nonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
+    <property name="java.runtime.version" value="21.0.8+9-LTS"/>
+    <property name="user.name" value="macbookpro"/>
+    <property name="stdout.encoding" value="UTF-8"/>
+    <property name="path.separator" value=":"/>
+    <property name="os.version" value="26.0"/>
+    <property name="java.runtime.name" value="OpenJDK Runtime Environment"/>
+    <property name="file.encoding" value="UTF-8"/>
+    <property name="java.vm.name" value="OpenJDK 64-Bit Server VM"/>
+    <property name="java.vendor.version" value="Corretto-21.0.8.9.1"/>
+    <property name="localRepository" value="/Users/macbookpro/.m2/repository"/>
+    <property name="java.vendor.url.bug" value="https://github.com/corretto/corretto-21/issues/"/>
+    <property name="java.io.tmpdir" value="/var/folders/30/dcmk_pjd2xq2_vq0j66l_shc0000gn/T/"/>
+    <property name="java.version" value="21.0.8"/>
+    <property name="user.dir" value="/Users/macbookpro/PhpstormProjects/kyv_shield_restfull/java"/>
+    <property name="os.arch" value="x86_64"/>
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification"/>
+    <property name="native.encoding" value="UTF-8"/>
+    <property name="java.library.path" value="/Users/macbookpro/Library/Java/Extensions:/Library/Java/Extensions:/Network/Library/Java/Extensions:/System/Library/Java/Extensions:/usr/lib/java:."/>
+    <property name="java.vm.info" value="mixed mode, sharing"/>
+    <property name="stderr.encoding" value="UTF-8"/>
+    <property name="java.vendor" value="Amazon.com Inc."/>
+    <property name="java.vm.version" value="21.0.8+9-LTS"/>
+    <property name="sun.io.unicode.encoding" value="UnicodeBig"/>
+    <property name="socksNonProxyHosts" value="local|*.local|169.254/16|*.169.254/16"/>
+    <property name="java.class.version" value="65.0"/>
+  </properties>
+  <testcase name="testInvalidApiKeyReturnsException" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.691"/>
+  <testcase name="testGetChallengesIntegration" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.036">
+    <system-out><![CDATA[[getChallenges] document.minimal  = [center_document]
+[getChallenges] document.standard = [center_document, tilt_left, tilt_right]
+[getChallenges] selfie.standard   = [center_face, close_eyes, turn_left, turn_right]
+]]></system-out>
+  </testcase>
+  <testcase name="testChallengeModeFromValue" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testVerifyRectoVersoIntegration" classname="sn.innolink.kyvshield.KyvShieldTest" time="17.294">
+    <system-out><![CDATA[[verify] sessionId       = 4aa875a54a5fa7b1ac68023ee0de40d3
+[verify] overallStatus   = pass
+[verify] overallConfidence = 0.965
+[verify] processingTimeMs  = 17157
+[verify] step[0] recto success=true processingTimeMs=8927
+  liveness: isLive=true score=0.98 confidence=HIGH
+  extraction fields: 12
+    numero_carte=1 06 19930515 00026 8
+    prenoms=MOUSSA
+    nom=NDOUR
+[verify] step[1] verso success=true processingTimeMs=8144
+  liveness: isLive=true score=0.95 confidence=HIGH
+  extraction fields: 4
+    nin=1548199301837
+    code_pays=SEN
+    inscrit_liste_electorale=false
+]]></system-out>
+  </testcase>
+  <testcase name="testConstructorDefaultUrl" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testMissingImageFileThrows" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+  <testcase name="testVerifyOptionsBuilder" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testChallengeModeValues" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+  <testcase name="testConstructorNullApiKey" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+  <testcase name="testVerifyWebhookSignatureInvalid" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.007"/>
+  <testcase name="testVerifyWebhookSignatureValid" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.003"/>
+  <testcase name="testVerifyWithFaceMatchIntegration" classname="sn.innolink.kyvshield.KyvShieldTest" time="5.79">
+    <system-out><![CDATA[[verify+face] isMatch=false similarity=0.0
+]]></system-out>
+  </testcase>
+  <testcase name="testChallengeModeFromValueInvalid" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+  <testcase name="testVerifyOptionsBuilderMissingSteps" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.003"/>
+  <testcase name="testStepFromValue" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testVerifyOptionsBuilderMissingImages" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testConstructorBlankApiKey" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testVerifyOptionsBuilderMissingTarget" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+  <testcase name="testOverallStatusFromValue" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.0"/>
+  <testcase name="testVerifyWebhookSignatureNullArgs" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+  <testcase name="testConstructorCustomUrl" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.003"/>
+  <testcase name="testStepValues" classname="sn.innolink.kyvshield.KyvShieldTest" time="0.001"/>
+</testsuite>

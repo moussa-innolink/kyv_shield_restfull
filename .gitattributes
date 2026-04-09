@@ -1,0 +1,11 @@
+# Exclude other SDKs from Composer/Packagist downloads
+/nodejs export-ignore
+/java export-ignore
+/kotlin export-ignore
+/go export-ignore
+/settings.gradle.kts export-ignore
+/package.json export-ignore
+
+# Exclude test files
+*.test.* export-ignore
+test.* export-ignore

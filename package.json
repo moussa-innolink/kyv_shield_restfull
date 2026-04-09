@@ -1,0 +1,21 @@
+{
+  "name": "@kyvshield/rest-sdk",
+  "version": "1.0.0",
+  "description": "KyvShield REST KYC API SDK for Node.js/TypeScript — typed, self-contained, zero dependencies",
+  "main": "nodejs/dist/index.js",
+  "types": "nodejs/dist/index.d.ts",
+  "files": ["nodejs/dist/", "nodejs/src/"],
+  "scripts": {
+    "build": "cd nodejs && npx tsc",
+    "test": "cd nodejs && npx ts-node test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moussa-innolink/kyv_shield_restfull.git"
+  },
+  "keywords": ["kyc", "identity-verification", "kyvshield", "ocr", "liveness"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
