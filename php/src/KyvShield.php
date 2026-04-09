@@ -574,7 +574,16 @@ final class KyvShield
             if (str_starts_with($value, 'data:image/')) {
                 continue; // Data URI — decoded at send time
             }
-            // Heuristic for a bare base64 string: no path separators, very long, no extension
+            // Detect known base64 image prefixes first — JPEG base64 starts with /9j/ which
+            // contains '/', so checking for path separators alone is not reliable.
+            if (str_starts_with($value, '/9j/')    // JPEG base64
+                || str_starts_with($value, 'iVBOR') // PNG base64
+                || str_starts_with($value, 'UklGR') // WebP base64
+                || str_starts_with($value, 'R0lGO') // GIF base64
+            ) {
+                continue; // Base64 string — decoded at send time
+            }
+            // Fallback heuristic: long string with no path separators and no file extension
             if (!str_contains($value, '/') && !str_contains($value, '\\')
                 && strlen($value) > 64 && !preg_match('/\.\w{2,5}$/', $value)) {
                 continue; // Base64 string — decoded at send time
@@ -698,9 +707,16 @@ final class KyvShield
             return $bytes;
         }
 
-        // 3. Bare base64 string (no path separators, very long, no extension)
-        if (!str_contains($value, '/') && !str_contains($value, '\\')
-            && strlen($value) > 64 && !preg_match('/\.\w{2,5}$/', $value)) {
+        // 3. Bare base64 string
+        // Detect known base64 image prefixes first — JPEG base64 starts with /9j/ which
+        // contains '/', so checking for path separators alone is not reliable.
+        $isKnownB64Prefix = str_starts_with($value, '/9j/')    // JPEG base64
+            || str_starts_with($value, 'iVBOR') // PNG base64
+            || str_starts_with($value, 'UklGR') // WebP base64
+            || str_starts_with($value, 'R0lGO'); // GIF base64
+        $isFallbackB64 = !str_contains($value, '/') && !str_contains($value, '\\')
+            && strlen($value) > 64 && !preg_match('/\.\w{2,5}$/', $value);
+        if ($isKnownB64Prefix || $isFallbackB64) {
             $sizeKb = (int) (strlen($value) * 0.75 / 1024);
             $this->log('debug', sprintf('Decoding base64 image %s (%dKB)', $label, $sizeKb));
             $bytes = base64_decode($value, true);

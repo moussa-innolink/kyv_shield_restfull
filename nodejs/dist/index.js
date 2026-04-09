@@ -317,7 +317,15 @@ export class KyvShield {
                 continue;
             if (value.startsWith('data:image/'))
                 continue;
-            // Check if it looks like a base64 string (no path separator, long, no extension)
+            // Check if it looks like a base64 string — detect by known image prefixes first
+            // (JPEG base64 starts with /9j/ which contains '/', so we cannot rely on path-separator check)
+            const isJpegB64 = value.startsWith('/9j/');
+            const isPngB64 = value.startsWith('iVBOR');
+            const isWebpB64 = value.startsWith('UklGR');
+            const isGifB64 = value.startsWith('R0lGO');
+            if (isJpegB64 || isPngB64 || isWebpB64 || isGifB64)
+                continue;
+            // Fallback heuristic: long string with no path separators and no file extension
             if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value))
                 continue;
             const resolved = path.resolve(value);
@@ -365,12 +373,20 @@ export class KyvShield {
             const buf = Buffer.from(b64, 'base64');
             return this.warnIfLarge(buf, label);
         }
-        // 4. Base64 string (no path separators, long, no file extension)
-        if (!value.includes('/') && !value.includes('\\') && value.length > 64 && !/\.\w{2,5}$/.test(value)) {
-            const sizeKb = Math.round(value.length * 0.75 / 1024);
-            this.log('debug', `Decoding base64 image (${sizeKb}KB)`);
-            const buf = Buffer.from(value, 'base64');
-            return this.warnIfLarge(buf, label);
+        // 4. Base64 string — detect by trying to decode and checking for valid image magic bytes
+        // Base64 JPEG starts with /9j/ which contains '/' so we can't rely on path separator check
+        if (value.length > 256) {
+            // Try to detect common base64 image prefixes
+            const isLikelyBase64 = /^[A-Za-z0-9+/=\s]/.test(value) && !value.includes('\n') && !value.includes(' ') && !/^[A-Z]:\\/.test(value);
+            const isJpegB64 = value.startsWith('/9j/');
+            const isPngB64 = value.startsWith('iVBOR');
+            const isWebpB64 = value.startsWith('UklGR');
+            if (isJpegB64 || isPngB64 || isWebpB64 || (isLikelyBase64 && !fs.existsSync(value))) {
+                const sizeKb = Math.round(value.length * 0.75 / 1024);
+                this.log('debug', `Decoding base64 image (${sizeKb}KB)`);
+                const buf = Buffer.from(value, 'base64');
+                return this.warnIfLarge(buf, label);
+            }
         }
         // 5. File path
         const resolved = path.resolve(value);

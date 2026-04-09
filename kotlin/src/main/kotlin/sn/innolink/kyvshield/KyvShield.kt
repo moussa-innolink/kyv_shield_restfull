@@ -369,6 +369,10 @@ class KyvShield(
                 val seg = urlPath.substringAfterLast('/')
                 seg.ifEmpty { "$name.jpg" }
             }
+            // Known base64 image prefixes — JPEG base64 starts with /9j/ which contains '/'
+            // and would otherwise be mistaken for a filesystem path.
+            value is String && (value.startsWith("/9j/") || value.startsWith("iVBOR")
+                    || value.startsWith("UklGR") || value.startsWith("R0lGO")) -> "$name.jpg"
             value is String && !value.startsWith("data:image/")
                     && (value.contains('/') || value.contains('\\') || value.matches(Regex(".*\\.\\w{2,5}$"))) -> {
                 File(value).name
@@ -501,9 +505,16 @@ class KyvShield(
             }
         }
 
-        // 4. Bare base64 (no path separators, long, no extension)
-        if (!str.contains('/') && !str.contains('\\')
-            && str.length > 64 && !str.matches(Regex(".*\\.\\w{2,5}$"))) {
+        // 4. Bare base64 string
+        // Detect known base64 image prefixes first — JPEG base64 starts with /9j/ which
+        // contains '/', so checking for path separators alone is not reliable.
+        val isKnownB64Prefix = str.startsWith("/9j/")    // JPEG base64
+                || str.startsWith("iVBOR")  // PNG base64
+                || str.startsWith("UklGR")  // WebP base64
+                || str.startsWith("R0lGO")  // GIF base64
+        val isFallbackB64 = !str.contains('/') && !str.contains('\\')
+                && str.length > 64 && !str.matches(Regex(".*\\.\\w{2,5}$"))
+        if (isKnownB64Prefix || isFallbackB64) {
             val sizeKb = (str.length * 0.75 / 1024).toInt()
             log("Decoding base64 image $label (${sizeKb}KB)")
             return try {

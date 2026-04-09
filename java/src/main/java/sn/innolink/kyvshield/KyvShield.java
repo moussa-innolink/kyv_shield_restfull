@@ -654,9 +654,16 @@ public final class KyvShield {
             }
         }
 
-        // 3. Bare base64 (no path separators, long, no extension)
-        if (!value.contains("/") && !value.contains("\\")
-                && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$")) {
+        // 3. Bare base64 string
+        // Detect known base64 image prefixes first — JPEG base64 starts with /9j/ which
+        // contains '/', so checking for path separators alone is not reliable.
+        boolean isKnownB64Prefix = value.startsWith("/9j/")    // JPEG base64
+                || value.startsWith("iVBOR")  // PNG base64
+                || value.startsWith("UklGR")  // WebP base64
+                || value.startsWith("R0lGO"); // GIF base64
+        boolean isFallbackB64 = !value.contains("/") && !value.contains("\\")
+                && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$");
+        if (isKnownB64Prefix || isFallbackB64) {
             int sizeKb = (int) (value.length() * 0.75 / 1024);
             log("Decoding base64 image " + label + " (" + sizeKb + "KB)");
             try {
@@ -691,8 +698,12 @@ public final class KyvShield {
             }
             return fieldName + ".jpg";
         }
-        if (value.startsWith("data:image/") || (!value.contains("/") && !value.contains("\\")
-                && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$"))) {
+        // Base64 strings (known prefix or fallback heuristic) → use field name as filename
+        boolean isKnownB64 = value.startsWith("/9j/") || value.startsWith("iVBOR")
+                || value.startsWith("UklGR") || value.startsWith("R0lGO");
+        boolean isFallbackB64 = !value.contains("/") && !value.contains("\\")
+                && value.length() > 64 && !value.matches(".*\\.\\w{2,5}$");
+        if (value.startsWith("data:image/") || isKnownB64 || isFallbackB64) {
             return fieldName + ".jpg";
         }
         // Filesystem path — use basename

@@ -554,7 +554,9 @@ func (c *Client) resolveImageWithLog(value, fieldName string) ([]byte, error) {
 			sizeKb := int(float64(len(value)-commaIdx-1)*0.75) / 1024
 			c.logf("Decoding base64 image %s (%dKB)", fieldName, sizeKb)
 		}
-	} else if !strings.ContainsAny(value, "/\\") && len(value) > 64 {
+	} else if strings.HasPrefix(value, "/9j/") || strings.HasPrefix(value, "iVBOR") ||
+		strings.HasPrefix(value, "UklGR") || strings.HasPrefix(value, "R0lGO") ||
+		(!strings.ContainsAny(value, "/\\") && len(value) > 64) {
 		sizeKb := int(float64(len(value))*0.75) / 1024
 		c.logf("Decoding base64 image %s (%dKB)", fieldName, sizeKb)
 	}
@@ -597,19 +599,24 @@ func resolveImage(value string) ([]byte, error) {
 		return base64.StdEncoding.DecodeString(value[commaIdx+1:])
 	}
 
-	// 3. Bare base64 (no path separators, length > 64, no file extension)
-	if !strings.ContainsAny(value, "/\\") && len(value) > 64 {
-		ext := filepath.Ext(value)
-		if ext == "" || len(ext) > 5 {
-			decoded, err := base64.StdEncoding.DecodeString(value)
-			if err == nil {
-				return decoded, nil
-			}
-			// Fall back to RawStdEncoding (no padding)
-			decoded, err = base64.RawStdEncoding.DecodeString(value)
-			if err == nil {
-				return decoded, nil
-			}
+	// 3. Bare base64 string
+	// Detect known base64 image prefixes first — JPEG base64 starts with /9j/ which
+	// contains '/', so checking for path separators alone is not reliable.
+	isKnownB64Prefix := strings.HasPrefix(value, "/9j/") || // JPEG base64
+		strings.HasPrefix(value, "iVBOR") || // PNG base64
+		strings.HasPrefix(value, "UklGR") || // WebP base64
+		strings.HasPrefix(value, "R0lGO")    // GIF base64
+	isFallbackB64 := !strings.ContainsAny(value, "/\\") && len(value) > 64 &&
+		(filepath.Ext(value) == "" || len(filepath.Ext(value)) > 5)
+	if isKnownB64Prefix || isFallbackB64 {
+		decoded, err := base64.StdEncoding.DecodeString(value)
+		if err == nil {
+			return decoded, nil
+		}
+		// Fall back to RawStdEncoding (no padding)
+		decoded, err = base64.RawStdEncoding.DecodeString(value)
+		if err == nil {
+			return decoded, nil
 		}
 	}
 
@@ -628,8 +635,12 @@ func deriveFilename(value, fieldName string) string {
 		}
 		return fieldName + ".jpg"
 	}
-	if strings.HasPrefix(value, "data:image/") ||
-		(!strings.ContainsAny(value, "/\\") && len(value) > 64 && filepath.Ext(value) == "") {
+	// Known base64 image prefixes or fallback heuristic → use field name as filename.
+	// JPEG base64 starts with /9j/ which contains '/' and would otherwise be treated as a path.
+	isKnownB64 := strings.HasPrefix(value, "/9j/") || strings.HasPrefix(value, "iVBOR") ||
+		strings.HasPrefix(value, "UklGR") || strings.HasPrefix(value, "R0lGO")
+	isFallbackB64 := !strings.ContainsAny(value, "/\\") && len(value) > 64 && filepath.Ext(value) == ""
+	if strings.HasPrefix(value, "data:image/") || isKnownB64 || isFallbackB64 {
 		return fieldName + ".jpg"
 	}
 	return filepath.Base(value)
