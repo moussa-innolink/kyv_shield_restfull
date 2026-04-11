@@ -22,6 +22,7 @@ public final class KycResponse {
     private final double overallConfidence;
     private final long processingTimeMs;
     private final FaceVerification faceVerification;
+    private final AMLScreening amlScreening;
     private final List<StepResult> steps;
 
     private KycResponse(
@@ -31,6 +32,7 @@ public final class KycResponse {
             double overallConfidence,
             long processingTimeMs,
             FaceVerification faceVerification,
+            AMLScreening amlScreening,
             List<StepResult> steps) {
         this.success           = success;
         this.sessionId         = sessionId;
@@ -38,6 +40,7 @@ public final class KycResponse {
         this.overallConfidence = overallConfidence;
         this.processingTimeMs  = processingTimeMs;
         this.faceVerification  = faceVerification;
+        this.amlScreening      = amlScreening;
         this.steps             = Collections.unmodifiableList(steps);
     }
 
@@ -84,6 +87,14 @@ public final class KycResponse {
     }
 
     /**
+     * Returns the AML/sanctions screening result when screening was configured.
+     * Returns {@code null} when AML screening was not performed.
+     */
+    public AMLScreening getAmlScreening() {
+        return amlScreening;
+    }
+
+    /**
      * Returns per-step results in the order they were submitted.
      * Never {@code null}.
      */
@@ -114,6 +125,12 @@ public final class KycResponse {
             faceVerification = FaceVerification.fromJson(faceObj);
         }
 
+        AMLScreening amlScreening = null;
+        JSONObject amlObj = json.optJSONObject("aml_screening");
+        if (amlObj != null) {
+            amlScreening = AMLScreening.fromJson(amlObj);
+        }
+
         List<StepResult> steps = new ArrayList<>();
         JSONArray stepsArr = json.optJSONArray("steps");
         if (stepsArr != null) {
@@ -126,7 +143,7 @@ public final class KycResponse {
         }
 
         return new KycResponse(success, sessionId, overallStatus, overallConfidence,
-                processingTimeMs, faceVerification, steps);
+                processingTimeMs, faceVerification, amlScreening, steps);
     }
 
     @Override

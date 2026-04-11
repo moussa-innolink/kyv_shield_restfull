@@ -603,6 +603,34 @@ class KyvShield(
                 )
             } else null
 
+            val amlScreening: AMLScreening? = if (root.has("aml_screening")) {
+                val aml = root.getJSONObject("aml_screening")
+                val matchesArr = aml.optJSONArray("matches")
+                val matches = if (matchesArr != null) {
+                    (0 until matchesArr.length()).map { i ->
+                        val m = matchesArr.getJSONObject(i)
+                        val dsArr = m.optJSONArray("datasets")
+                        val tpArr = m.optJSONArray("topics")
+                        AMLMatch(
+                            entityId = m.optString("entity_id", ""),
+                            name = m.optString("name", ""),
+                            score = m.optDouble("score", 0.0),
+                            datasets = if (dsArr != null) (0 until dsArr.length()).map { dsArr.optString(it, "") } else emptyList(),
+                            topics = if (tpArr != null) (0 until tpArr.length()).map { tpArr.optString(it, "") } else emptyList(),
+                        )
+                    }
+                } else emptyList()
+                AMLScreening(
+                    performed = aml.optBoolean("performed", false),
+                    status = aml.optString("status", "disabled"),
+                    riskLevel = aml.optString("risk_level", "low"),
+                    totalMatches = aml.optInt("total_matches", 0),
+                    matches = matches,
+                    screenedAt = if (aml.has("screened_at")) aml.optString("screened_at") else null,
+                    durationMs = aml.optInt("duration_ms", 0),
+                )
+            } else null
+
             val stepsArray = root.optJSONArray("steps") ?: JSONArray()
             val steps = (0 until stepsArray.length()).map { i ->
                 parseStepResult(stepsArray.getJSONObject(i))
@@ -615,6 +643,7 @@ class KyvShield(
                 overallConfidence = overallConfidence,
                 processingTimeMs = processingTimeMs,
                 faceVerification = faceVerification,
+                amlScreening = amlScreening,
                 steps = steps,
             )
         } catch (e: KyvShieldException) {

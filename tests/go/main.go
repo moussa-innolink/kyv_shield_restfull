@@ -165,6 +165,21 @@ func main() {
 					step.StepType, field.DisplayPriority, field.Label, field.Key, field.Value)
 			}
 		}
+
+		// AML Screening
+		if resp.AMLScreening != nil {
+			aml := resp.AMLScreening
+			fmt.Println("\n  AML Screening:")
+			fmt.Printf("    performed: %v\n", aml.Performed)
+			fmt.Printf("    status: %s\n", aml.Status)
+			fmt.Printf("    risk_level: %s\n", aml.RiskLevel)
+			fmt.Printf("    total_matches: %d\n", aml.TotalMatches)
+			fmt.Printf("    duration_ms: %d\n", aml.DurationMs)
+			for _, m := range aml.Matches {
+				fmt.Printf("      match: %s (score=%.2f, datasets=%v, topics=%v)\n",
+					m.Name, m.Score, m.Datasets, m.Topics)
+			}
+		}
 	}
 
 	// ── Test 3: Verify with raw bytes (ImageBytes map) ────────────────────────

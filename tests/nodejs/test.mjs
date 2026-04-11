@@ -60,6 +60,21 @@ try {
     console.log(`    user_messages: ${JSON.stringify(step.user_messages)}`);
   }
 
+  // AML Screening
+  if (result.aml_screening) {
+    console.log(`  --- AML Screening ---`);
+    console.log(`    performed: ${result.aml_screening.performed}`);
+    console.log(`    status: ${result.aml_screening.status}`);
+    console.log(`    risk_level: ${result.aml_screening.risk_level}`);
+    console.log(`    total_matches: ${result.aml_screening.total_matches}`);
+    console.log(`    duration_ms: ${result.aml_screening.duration_ms}`);
+    if (result.aml_screening.matches?.length > 0) {
+      for (const m of result.aml_screening.matches) {
+        console.log(`      match: ${m.name} (score=${m.score}, datasets=${m.datasets?.join(',')}, topics=${m.topics?.join(',')})`);
+      }
+    }
+  }
+
   console.log(`  [${result.success ? 'PASS' : 'REJECT'}] verify\n`);
 } catch (e) {
   console.log(`  [FAIL] ${e.message}\n`);

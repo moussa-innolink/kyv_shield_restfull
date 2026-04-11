@@ -150,6 +150,40 @@ export interface FaceVerification {
   similarity_score: number;
 }
 
+// ─── AML Screening ────────────────────────────────────────────────────────────
+
+/** A single AML screening match entry */
+export interface AMLMatch {
+  /** Entity identifier from the sanctions list */
+  entity_id: string;
+  /** Matched entity name */
+  name: string;
+  /** Match confidence score (0–1) */
+  score: number;
+  /** Datasets where the match was found */
+  datasets: string[];
+  /** Match topics (e.g., "sanction", "pep") */
+  topics: string[];
+}
+
+/** AML/sanctions screening result */
+export interface AMLScreening {
+  /** Whether AML screening was performed */
+  performed: boolean;
+  /** Screening status: clear | match | error | disabled */
+  status: string;
+  /** Risk level: low | medium | high | critical */
+  risk_level: string;
+  /** Total number of matches found */
+  total_matches: number;
+  /** List of matched entities */
+  matches: AMLMatch[];
+  /** Timestamp when screening was performed */
+  screened_at?: string;
+  /** Processing duration in milliseconds */
+  duration_ms: number;
+}
+
 // ─── KYC Response ─────────────────────────────────────────────────────────────
 
 /** Top-level response from POST /api/v1/kyc/verify */
@@ -166,6 +200,8 @@ export interface KycResponse {
   processing_time_ms: number;
   /** Face-match result (present when require_face_match was true) */
   face_verification?: FaceVerification;
+  /** AML/sanctions screening result (optional) */
+  aml_screening?: AMLScreening;
   /** Per-step results in submission order */
   steps: StepResult[];
 }

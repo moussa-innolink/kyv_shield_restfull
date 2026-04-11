@@ -250,6 +250,51 @@ data class FaceVerification(
     val similarityScore: Double,
 )
 
+// ─── AML Screening ───────────────────────────────────────────────────────────
+
+/**
+ * A single entity match from AML/sanctions screening.
+ */
+data class AMLMatch(
+    /** Entity identifier from the sanctions list */
+    val entityId: String,
+    /** Matched entity name */
+    val name: String,
+    /** Match confidence score (0–1) */
+    val score: Double,
+    /** Datasets where the match was found */
+    val datasets: List<String>,
+    /** Match topics (e.g., "sanction", "pep") */
+    val topics: List<String>,
+)
+
+/**
+ * AML/sanctions screening result.
+ * Present in [KycResponse] only when AML screening was configured.
+ */
+data class AMLScreening(
+    /** Whether AML screening was performed */
+    val performed: Boolean,
+    /** Screening status: "clear", "match", "error", or "disabled" */
+    val status: String,
+    /** Risk level: "low", "medium", "high", or "critical" */
+    val riskLevel: String,
+    /** Total number of matches found */
+    val totalMatches: Int,
+    /** List of matched entities */
+    val matches: List<AMLMatch>,
+    /** ISO 8601 timestamp when screening was performed */
+    val screenedAt: String?,
+    /** Processing duration in milliseconds */
+    val durationMs: Int,
+) {
+    /** Whether the screening result is clear (no matches) */
+    val isClear: Boolean get() = status == "clear"
+
+    /** Whether matches were found */
+    val hasMatches: Boolean get() = status == "match" && totalMatches > 0
+}
+
 // ─── KYC Response ────────────────────────────────────────────────────────────
 
 /**
@@ -268,6 +313,8 @@ data class KycResponse(
     val processingTimeMs: Int,
     /** Face-match result (present when requireFaceMatch was true) */
     val faceVerification: FaceVerification?,
+    /** AML/sanctions screening result (optional) */
+    val amlScreening: AMLScreening?,
     /** Per-step results in submission order */
     val steps: List<StepResult>,
 )

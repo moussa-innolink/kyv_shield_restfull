@@ -28,6 +28,8 @@ import sn.innolink.kyvshield.model.KycResponse;
 import sn.innolink.kyvshield.model.Step;
 import sn.innolink.kyvshield.model.StepResult;
 import sn.innolink.kyvshield.model.ExtractionField;
+import sn.innolink.kyvshield.model.AMLScreening;
+import sn.innolink.kyvshield.model.AMLMatch;
 import sn.innolink.kyvshield.model.VerifyOptions;
 
 import javax.crypto.Mac;
@@ -186,6 +188,21 @@ public class IntegrationTest {
                                     field.getLabel(),
                                     field.getKey(),
                                     field.getValue()));
+                }
+            }
+
+            // AML Screening
+            if (resp.getAmlScreening() != null) {
+                AMLScreening aml = resp.getAmlScreening();
+                System.out.println("\n  AML Screening:");
+                System.out.println("    performed: " + aml.isPerformed());
+                System.out.println("    status: " + aml.getStatus());
+                System.out.println("    risk_level: " + aml.getRiskLevel());
+                System.out.println("    total_matches: " + aml.getTotalMatches());
+                System.out.println("    duration_ms: " + aml.getDurationMs());
+                for (AMLMatch m : aml.getMatches()) {
+                    System.out.printf("      match: %s (score=%.2f, datasets=%s, topics=%s)%n",
+                            m.getName(), m.getScore(), m.getDatasets(), m.getTopics());
                 }
             }
         } catch (KyvShieldException e) {

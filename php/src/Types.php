@@ -57,6 +57,7 @@ final class KycResponse
         public readonly int $processingTimeMs,
         public readonly array $steps,
         public readonly ?FaceVerification $faceVerification = null,
+        public readonly ?AMLScreening $amlScreening = null,
     ) {
     }
 
@@ -75,6 +76,11 @@ final class KycResponse
             $faceVerification = FaceVerification::fromArray($data['face_verification']);
         }
 
+        $amlScreening = null;
+        if (isset($data['aml_screening'])) {
+            $amlScreening = AMLScreening::fromArray($data['aml_screening']);
+        }
+
         return new self(
             success: (bool) ($data['success'] ?? false),
             sessionId: (string) ($data['session_id'] ?? ''),
@@ -83,6 +89,7 @@ final class KycResponse
             processingTimeMs: (int) ($data['processing_time_ms'] ?? 0),
             steps: $steps,
             faceVerification: $faceVerification,
+            amlScreening: $amlScreening,
         );
     }
 }
@@ -296,6 +303,84 @@ final class ExtractedPhoto
             area: (float) ($data['area'] ?? 0.0),
             width: (int) ($data['width'] ?? 0),
             height: (int) ($data['height'] ?? 0),
+        );
+    }
+}
+
+// =============================================================================
+// AML SCREENING
+// =============================================================================
+
+/**
+ * A single AML screening match entry
+ */
+final class AMLMatch
+{
+    /**
+     * @param  string[]  $datasets
+     * @param  string[]  $topics
+     */
+    public function __construct(
+        public readonly string $entityId,
+        public readonly string $name,
+        public readonly float $score,
+        public readonly array $datasets = [],
+        public readonly array $topics = [],
+    ) {
+    }
+
+    /**
+     * @param  array<string,mixed>  $data
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            entityId: (string) ($data['entity_id'] ?? ''),
+            name: (string) ($data['name'] ?? ''),
+            score: (float) ($data['score'] ?? 0.0),
+            datasets: array_map('strval', $data['datasets'] ?? []),
+            topics: array_map('strval', $data['topics'] ?? []),
+        );
+    }
+}
+
+/**
+ * AML/sanctions screening result
+ */
+final class AMLScreening
+{
+    /**
+     * @param  AMLMatch[]  $matches
+     */
+    public function __construct(
+        public readonly bool $performed,
+        public readonly string $status,
+        public readonly string $riskLevel,
+        public readonly int $totalMatches,
+        public readonly array $matches = [],
+        public readonly ?string $screenedAt = null,
+        public readonly int $durationMs = 0,
+    ) {
+    }
+
+    /**
+     * @param  array<string,mixed>  $data
+     */
+    public static function fromArray(array $data): self
+    {
+        $matches = [];
+        foreach (($data['matches'] ?? []) as $m) {
+            $matches[] = AMLMatch::fromArray($m);
+        }
+
+        return new self(
+            performed: (bool) ($data['performed'] ?? false),
+            status: (string) ($data['status'] ?? 'disabled'),
+            riskLevel: (string) ($data['risk_level'] ?? 'low'),
+            totalMatches: (int) ($data['total_matches'] ?? 0),
+            matches: $matches,
+            screenedAt: isset($data['screened_at']) ? (string) $data['screened_at'] : null,
+            durationMs: (int) ($data['duration_ms'] ?? 0),
         );
     }
 }

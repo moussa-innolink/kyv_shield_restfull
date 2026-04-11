@@ -149,6 +149,19 @@ fun main() {
                 println("    [${step.stepType}][priority=${field.displayPriority}] ${field.label} (${field.key}) = ${field.value}")
             }
         }
+
+        // AML Screening
+        resp.amlScreening?.let { aml ->
+            println("\n  AML Screening:")
+            println("    performed: ${aml.performed}")
+            println("    status: ${aml.status}")
+            println("    risk_level: ${aml.riskLevel}")
+            println("    total_matches: ${aml.totalMatches}")
+            println("    duration_ms: ${aml.durationMs}")
+            aml.matches.forEach { m ->
+                println("      match: ${m.name} (score=${"%.2f".format(m.score)}, datasets=${m.datasets}, topics=${m.topics})")
+            }
+        }
     } catch (e: KyvShieldException) {
         fail("verify recto+verso", e.message ?: "unknown error")
     }

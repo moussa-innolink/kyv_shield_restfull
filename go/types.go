@@ -277,6 +277,50 @@ type FaceVerification struct {
 	SimilarityScore float64 `json:"similarity_score"`
 }
 
+// ─── AML Screening ────────────────────────────────────────────────────────────
+
+// AMLMatch represents a single entity match from AML/sanctions screening.
+type AMLMatch struct {
+	// EntityID is the identifier from the sanctions list.
+	EntityID string `json:"entity_id"`
+
+	// Name is the matched entity name.
+	Name string `json:"name"`
+
+	// Score is the match confidence score (0–1).
+	Score float64 `json:"score"`
+
+	// Datasets lists the databases where the match was found.
+	Datasets []string `json:"datasets"`
+
+	// Topics lists the match categories (e.g., "sanction", "pep").
+	Topics []string `json:"topics"`
+}
+
+// AMLScreening holds the AML/sanctions screening result.
+type AMLScreening struct {
+	// Performed indicates whether AML screening was executed.
+	Performed bool `json:"performed"`
+
+	// Status is the screening outcome: "clear", "match", "error", or "disabled".
+	Status string `json:"status"`
+
+	// RiskLevel is the assessed risk: "low", "medium", "high", or "critical".
+	RiskLevel string `json:"risk_level"`
+
+	// TotalMatches is the number of matched entities.
+	TotalMatches int `json:"total_matches"`
+
+	// Matches contains the individual match results.
+	Matches []AMLMatch `json:"matches"`
+
+	// ScreenedAt is the ISO 8601 timestamp when screening was performed.
+	ScreenedAt string `json:"screened_at,omitempty"`
+
+	// DurationMs is the screening processing time in milliseconds.
+	DurationMs int `json:"duration_ms"`
+}
+
 // ─── KYC Response ─────────────────────────────────────────────────────────────
 
 // KycResponse is the top-level response from POST /api/v1/kyc/verify.
@@ -298,6 +342,9 @@ type KycResponse struct {
 
 	// FaceVerification contains the face-match result when RequireFaceMatch was true.
 	FaceVerification *FaceVerification `json:"face_verification,omitempty"`
+
+	// AMLScreening contains the AML/sanctions screening result when performed.
+	AMLScreening *AMLScreening `json:"aml_screening,omitempty"`
 
 	// Steps contains the per-step results in submission order.
 	Steps []StepResult `json:"steps"`

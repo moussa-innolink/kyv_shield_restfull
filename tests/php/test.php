@@ -159,6 +159,20 @@ try {
         }
     }
 
+    // AML Screening
+    if ($verifyResponse->amlScreening !== null) {
+        $aml = $verifyResponse->amlScreening;
+        echo "\n  AML Screening:\n";
+        echo "    performed: " . ($aml->performed ? 'true' : 'false') . "\n";
+        echo "    status: {$aml->status}\n";
+        echo "    risk_level: {$aml->riskLevel}\n";
+        echo "    total_matches: {$aml->totalMatches}\n";
+        echo "    duration_ms: {$aml->durationMs}\n";
+        foreach ($aml->matches as $m) {
+            echo "      match: {$m->name} (score={$m->score}, datasets=" . implode(',', $m->datasets) . ", topics=" . implode(',', $m->topics) . ")\n";
+        }
+    }
+
 } catch (KyvShieldException $e) {
     fail('verify recto+verso', $e->getMessage());
 }
