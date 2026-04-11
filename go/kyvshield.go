@@ -344,6 +344,15 @@ func (c *Client) Verify(ctx context.Context, opts *VerifyOptions) (*KycResponse,
 		return nil, fmt.Errorf("kyvshield: write field 'require_face_match': %w", err)
 	}
 
+	// require_aml — always send to be explicit.
+	amlVal := "false"
+	if opts.RequireAml {
+		amlVal = "true"
+	}
+	if err := mw.WriteField("require_aml", amlVal); err != nil {
+		return nil, fmt.Errorf("kyvshield: write field 'require_aml': %w", err)
+	}
+
 	if opts.KycIdentifier != "" {
 		if err := mw.WriteField("kyc_identifier", opts.KycIdentifier); err != nil {
 			return nil, fmt.Errorf("kyvshield: write field 'kyc_identifier': %w", err)

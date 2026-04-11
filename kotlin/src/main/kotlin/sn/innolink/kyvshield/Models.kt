@@ -393,6 +393,12 @@ data class VerifyOptions(
     val requireFaceMatch: Boolean = false,
 
     /**
+     * Whether to perform AML (Anti-Money Laundering) sanctions screening.
+     * Defaults to `false`.
+     */
+    val requireAml: Boolean = false,
+
+    /**
      * Optional caller-provided identifier for correlating sessions in your system.
      */
     val kycIdentifier: String? = null,

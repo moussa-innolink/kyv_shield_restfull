@@ -620,6 +620,7 @@ final class KyvShield
             'language'         => $options->language,
             'challenge_mode'   => $options->challengeMode,
             'require_face_match' => $options->requireFaceMatch ? 'true' : 'false',
+            'require_aml' => $options->requireAml ? 'true' : 'false',
         ];
 
         if ($options->kycIdentifier !== null && $options->kycIdentifier !== '') {

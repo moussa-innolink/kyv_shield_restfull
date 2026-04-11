@@ -490,6 +490,8 @@ public final class KyvShield {
 
         parts.add(textPart(boundary, "require_face_match",
                 options.isRequireFaceMatch() ? "true" : "false"));
+        parts.add(textPart(boundary, "require_aml",
+                options.isRequireAml() ? "true" : "false"));
 
         if (options.getKycIdentifier() != null && !options.getKycIdentifier().isEmpty()) {
             parts.add(textPart(boundary, "kyc_identifier", options.getKycIdentifier()));

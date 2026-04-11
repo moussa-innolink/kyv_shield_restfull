@@ -100,6 +100,9 @@ type VerifyOptions struct {
 	// RequireFaceMatch enables cross-step face matching between selfie and document photo.
 	RequireFaceMatch bool
 
+	// RequireAml enables AML (Anti-Money Laundering) sanctions screening.
+	RequireAml bool
+
 	// KycIdentifier is an optional caller-provided identifier for correlating sessions.
 	KycIdentifier string
 

@@ -497,6 +497,7 @@ export class KyvShield {
     }
 
     parts.push(textPart('require_face_match', options.requireFaceMatch === true ? 'true' : 'false'));
+    parts.push(textPart('require_aml', options.requireAml === true ? 'true' : 'false'));
 
     if (options.kycIdentifier !== undefined) {
       parts.push(textPart('kyc_identifier', options.kycIdentifier));

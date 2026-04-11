@@ -36,6 +36,7 @@ public final class VerifyOptions {
     private final ChallengeMode rectoChallengeMode;
     private final ChallengeMode versoChallengeMode;
     private final boolean requireFaceMatch;
+    private final boolean requireAml;
     private final String kycIdentifier;
 
     /**
@@ -79,6 +80,7 @@ public final class VerifyOptions {
         this.rectoChallengeMode  = builder.rectoChallengeMode;
         this.versoChallengeMode  = builder.versoChallengeMode;
         this.requireFaceMatch    = builder.requireFaceMatch;
+        this.requireAml          = builder.requireAml;
         this.kycIdentifier       = builder.kycIdentifier;
         this.images              = Collections.unmodifiableMap(new HashMap<>(builder.images != null ? builder.images : new HashMap<>()));
         this.imageBytes          = Collections.unmodifiableMap(new HashMap<>(builder.imageBytes != null ? builder.imageBytes : new HashMap<>()));
@@ -132,6 +134,11 @@ public final class VerifyOptions {
         return requireFaceMatch;
     }
 
+    /** Returns whether AML sanctions screening is enabled. */
+    public boolean isRequireAml() {
+        return requireAml;
+    }
+
     /**
      * Returns the caller-provided identifier for correlating sessions in an
      * external system, or {@code null} when not set.
@@ -169,6 +176,7 @@ public final class VerifyOptions {
         private ChallengeMode rectoChallengeMode;
         private ChallengeMode versoChallengeMode;
         private boolean requireFaceMatch = false;
+        private boolean requireAml = false;
         private String kycIdentifier;
         private Map<String, String> images = new HashMap<>();
         private Map<String, byte[]> imageBytes = new HashMap<>();
@@ -276,6 +284,18 @@ public final class VerifyOptions {
         }
 
         /**
+         * Sets whether AML (Anti-Money Laundering) sanctions screening
+         * should be performed.
+         *
+         * @param require {@code true} to enable AML screening
+         * @return this builder
+         */
+        public Builder requireAml(boolean require) {
+            this.requireAml = require;
+            return this;
+        }
+
+        /**
          * Sets an optional caller-provided identifier for correlating sessions
          * in an external system.
          *
@@ -351,6 +371,7 @@ public final class VerifyOptions {
                 + ", language='" + language + '\''
                 + ", challengeMode=" + challengeMode
                 + ", requireFaceMatch=" + requireFaceMatch
+                + ", requireAml=" + requireAml
                 + ", images=" + images.keySet() + '}';
     }
 }

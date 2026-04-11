@@ -414,6 +414,9 @@ class KyvShield(
         // require_face_match
         writeField("require_face_match", options.requireFaceMatch.toString())
 
+        // require_aml
+        writeField("require_aml", options.requireAml.toString())
+
         // kyc_identifier (optional)
         options.kycIdentifier?.let { writeField("kyc_identifier", it) }
 

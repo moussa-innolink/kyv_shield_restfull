@@ -20,6 +20,7 @@ final class VerifyOptions
      * @param  string    $challengeMode      minimal | standard | strict  (global fallback)
      * @param  array<string,string>  $stepChallengeModes   per-step override keyed by step name
      * @param  bool      $requireFaceMatch   whether to compare selfie vs document photo
+     * @param  bool      $requireAml        whether to perform AML sanctions screening
      * @param  string|null $kycIdentifier    optional caller-side identifier
      * @param  array<string,string>  $images  field-name → absolute file path
      *                                         e.g. ['recto_center_document' => '/path/recto.jpg']
@@ -31,6 +32,7 @@ final class VerifyOptions
         public readonly string $challengeMode,
         public readonly array $stepChallengeModes = [],
         public readonly bool $requireFaceMatch = false,
+        public readonly bool $requireAml = false,
         public readonly ?string $kycIdentifier = null,
         public readonly array $images = [],
     ) {

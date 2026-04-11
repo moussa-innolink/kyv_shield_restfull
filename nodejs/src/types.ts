@@ -312,6 +312,12 @@ export interface VerifyOptions {
   requireFaceMatch?: boolean;
 
   /**
+   * Whether to perform AML (Anti-Money Laundering) sanctions screening.
+   * @default false
+   */
+  requireAml?: boolean;
+
+  /**
    * Optional caller-provided identifier for correlating sessions in your system.
    */
   kycIdentifier?: string;
