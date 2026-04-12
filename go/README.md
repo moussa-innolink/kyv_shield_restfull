@@ -171,6 +171,7 @@ http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
 | `ChallengeMode` | `string` | Global challenge intensity: `"minimal"`, `"standard"`, `"strict"` |
 | `StepChallengeModes` | `map[string]string` | Per-step overrides, e.g. `{"recto_challenge_mode": "strict"}` |
 | `RequireFaceMatch` | `bool` | Cross-step face match between selfie and document photo |
+| `RequireAml` | `bool` | AML sanctions screening on extracted identity |
 | `KycIdentifier` | `string` | Optional caller-provided correlation ID |
 | `Images` | `map[string]string` | Image map — values can be file paths, URLs, data URIs, or base64 strings |
 | `ImageBytes` | `map[string][]byte` | Image map for raw bytes already in memory |
@@ -222,6 +223,46 @@ recto_tilt_right
 verso_center_document
 selfie_center_face
 selfie_turn_left
+```
+
+---
+
+## AML/Sanctions Screening
+
+### Inline (during KYC)
+
+Add `RequireAml: true` to your verify options:
+
+```go
+resp, err := client.Verify(context.Background(), &kyvshield.VerifyOptions{
+    Steps:            []string{"selfie", "recto", "verso"},
+    Target:           "SN-CIN",
+    RequireFaceMatch: true,
+    RequireAml:       true,
+    Images: map[string]string{
+        "selfie_center_face":    "/path/to/selfie.jpg",
+        "recto_center_document": "/path/to/recto.jpg",
+        "verso_center_document": "/path/to/verso.jpg",
+    },
+})
+if resp.AmlScreening != nil && resp.AmlScreening.Status == "hit" {
+    fmt.Println("AML match found!", resp.AmlScreening.Matches)
+}
+```
+
+### Standalone: POST /api/v1/verify/aml
+
+Screen a person against international sanctions lists and PEP databases without running a full KYC verification.
+
+```go
+body := `{"first_name":"John","last_name":"Doe","birth_date":"1990-01-15","nationality":"US"}`
+req, _ := http.NewRequest("POST",
+    "https://kyvshield-naruto.innolinkcloud.com/api/v1/verify/aml",
+    strings.NewReader(body))
+req.Header.Set("X-API-Key", "YOUR_API_KEY")
+req.Header.Set("Content-Type", "application/json")
+resp, err := http.DefaultClient.Do(req)
+// Parse response body — status: "clear" | "hit" | "error"
 ```
 
 ---

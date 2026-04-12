@@ -178,6 +178,7 @@ if (!valid) {
 | `rectoChallengeMode(ChallengeMode)` | `ChallengeMode` | — | Override for recto step |
 | `versoChallengeMode(ChallengeMode)` | `ChallengeMode` | — | Override for verso step |
 | `requireFaceMatch(boolean)` | `boolean` | `false` | Cross-step face match |
+| `requireAml(boolean)` | `boolean` | `false` | AML sanctions screening |
 | `kycIdentifier(String)` | `String` | — | Caller correlation ID |
 | `addImage(String, String)` | key, value | required | Image to submit (path / URL / base64 / data URI) |
 | `images(Map<String,String>)` | map | — | Replace entire image map |
@@ -254,6 +255,49 @@ Retrieve valid challenge identifiers per mode using `getChallenges()`.
 |----------|------------|-------------|
 | `PASS` | `pass` | All steps passed |
 | `REJECT` | `reject` | One or more steps failed |
+
+## AML/Sanctions Screening
+
+### Inline (during KYC)
+
+Add `.requireAml(true)` to your verify options:
+
+```java
+VerifyOptions options = new VerifyOptions.Builder()
+    .steps(Step.SELFIE, Step.RECTO, Step.VERSO)
+    .target("SN-CIN")
+    .requireFaceMatch(true)
+    .requireAml(true)
+    .addImage("selfie_center_face", "/path/to/selfie.jpg")
+    .addImage("recto_center_document", "/path/to/recto.jpg")
+    .addImage("verso_center_document", "/path/to/verso.jpg")
+    .build();
+
+KycResponse result = kyv.verify(options);
+if (result.getAmlScreening() != null && "hit".equals(result.getAmlScreening().getStatus())) {
+    System.out.println("AML match found!");
+}
+```
+
+### Standalone: POST /api/v1/verify/aml
+
+Screen a person against international sanctions lists and PEP databases without running a full KYC verification.
+
+```java
+// Using java.net.http.HttpClient
+HttpClient httpClient = HttpClient.newHttpClient();
+String json = """
+    {"first_name":"John","last_name":"Doe","birth_date":"1990-01-15","nationality":"US"}
+    """;
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("https://kyvshield-naruto.innolinkcloud.com/api/v1/verify/aml"))
+    .header("X-API-Key", "YOUR_API_KEY")
+    .header("Content-Type", "application/json")
+    .POST(HttpRequest.BodyPublishers.ofString(json))
+    .build();
+HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+// Parse response.body() as JSON — status: "clear" | "hit" | "error"
+```
 
 ## Error Handling
 

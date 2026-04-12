@@ -258,6 +258,9 @@ interface VerifyOptions {
   /** Whether to match selfie face against document photo. Default: false */
   requireFaceMatch?: boolean;
 
+  /** Whether to screen extracted identity against AML sanctions lists. Default: false */
+  requireAml?: boolean;
+
   /** Your internal reference ID, echoed back in the response. */
   kycIdentifier?: string;
 
@@ -361,6 +364,29 @@ interface FaceVerification {
 }
 ```
 
+### `AmlScreening`
+
+```typescript
+interface AmlScreening {
+  status: 'clear' | 'hit' | 'error';
+  risk_level: 'low' | 'medium' | 'high' | 'critical';
+  is_sanctioned: boolean;
+  is_pep: boolean;
+  matches: AmlMatch[];
+  screened_against: string[];   // e.g. ['ofac', 'un', 'eu', 'uk', 'fr']
+  screened_at: string;          // ISO 8601
+  total_entries_checked: number;
+}
+
+interface AmlMatch {
+  source: string;               // 'ofac' | 'un' | 'eu' | 'uk' | 'fr'
+  name_matched: string;
+  match_score: number;          // 0–1
+  programs: string[];
+  listed_on: string;            // ISO 8601
+}
+```
+
 ### `ChallengesResponse`
 
 ```typescript
@@ -370,6 +396,51 @@ interface ChallengesResponse {
     selfie:   { minimal: string[]; standard: string[]; strict: string[] };
   };
 }
+```
+
+---
+
+## AML/Sanctions Screening
+
+### Inline (during KYC)
+
+Add `requireAml: true` to your verify options to automatically screen the extracted identity:
+
+```typescript
+const result = await kyv.verify({
+  steps: ['selfie', 'recto', 'verso'],
+  target: 'SN-CIN',
+  requireFaceMatch: true,
+  requireAml: true,
+  images: { ... },
+});
+
+if (result.aml_screening?.status === 'hit') {
+  console.warn('AML match found!', result.aml_screening.matches);
+}
+```
+
+### Standalone: POST /api/v1/verify/aml
+
+Screen a person against international sanctions lists and PEP databases without running a full KYC verification.
+
+```typescript
+const resp = await fetch('https://kyvshield-naruto.innolinkcloud.com/api/v1/verify/aml', {
+  method: 'POST',
+  headers: {
+    'X-API-Key': 'YOUR_API_KEY',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    first_name: 'John',
+    last_name: 'Doe',
+    birth_date: '1990-01-15',
+    nationality: 'US',
+    id_number: '123456789',
+    id_type: 'national_id',
+  }),
+});
+const aml = await resp.json(); // AmlScreening
 ```
 
 ---

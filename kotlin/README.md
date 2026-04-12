@@ -131,6 +131,7 @@ Runs the full KYC pipeline synchronously and returns a structured result.
 | `challengeMode` | `ChallengeMode` | no (default `STANDARD`) | Global challenge intensity |
 | `stepChallengeModes` | `Map<String, ChallengeMode>?` | no | Per-step overrides, e.g. `mapOf("selfie" to ChallengeMode.MINIMAL)` |
 | `requireFaceMatch` | `Boolean` | no (default `false`) | Cross-step selfie ↔ document face match |
+| `requireAml` | `Boolean` | no (default `false`) | AML sanctions screening |
 | `kycIdentifier` | `String?` | no | Caller-provided correlation ID |
 | `images` | `Map<String, Any>` | yes | `{step}_{challenge}` → image value (see below) |
 
@@ -275,6 +276,51 @@ if (!isValid) throw SecurityException("Webhook signature mismatch")
 The server computes `HMAC-SHA256(body, apiKey)` and sends the hex digest in the
 `X-KyvShield-Signature` header. This method performs a constant-time comparison
 to prevent timing-based attacks.
+
+---
+
+## AML/Sanctions Screening
+
+### Inline (during KYC)
+
+Add `requireAml = true` to your verify options:
+
+```kotlin
+val response = client.verify(
+    VerifyOptions(
+        steps            = listOf(Step.SELFIE, Step.RECTO, Step.VERSO),
+        target           = "SN-CIN",
+        requireFaceMatch = true,
+        requireAml       = true,
+        images = mapOf(
+            "selfie_center_face"    to "/path/to/selfie.jpg",
+            "recto_center_document" to "/path/to/recto.jpg",
+            "verso_center_document" to "/path/to/verso.jpg",
+        ),
+    )
+)
+
+response.amlScreening?.let { aml ->
+    if (aml.status == "hit") println("AML match found! ${aml.matches}")
+}
+```
+
+### Standalone: POST /api/v1/verify/aml
+
+Screen a person against international sanctions lists and PEP databases without running a full KYC verification.
+
+```kotlin
+val httpClient = java.net.http.HttpClient.newHttpClient()
+val json = """{"first_name":"John","last_name":"Doe","birth_date":"1990-01-15","nationality":"US"}"""
+val request = java.net.http.HttpRequest.newBuilder()
+    .uri(java.net.URI.create("https://kyvshield-naruto.innolinkcloud.com/api/v1/verify/aml"))
+    .header("X-API-Key", "YOUR_API_KEY")
+    .header("Content-Type", "application/json")
+    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json))
+    .build()
+val response = httpClient.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
+// Parse response.body() — status: "clear" | "hit" | "error"
+```
 
 ---
 

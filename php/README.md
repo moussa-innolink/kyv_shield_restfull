@@ -125,6 +125,7 @@ $resp->getChallenges('document', 'standard'); // string[]
 | `challengeMode` | `string` | yes | Global fallback: `minimal` \| `standard` \| `strict` |
 | `stepChallengeModes` | `array<string,string>` | no | Per-step override, e.g. `['selfie' => 'strict']` |
 | `requireFaceMatch` | `bool` | no | Compare selfie vs document photo (default `false`) |
+| `requireAml` | `bool` | no | Screen extracted identity against AML sanctions lists (default `false`) |
 | `kycIdentifier` | `string\|null` | no | Caller-side identifier stored in session |
 | `images` | `array<string,string>` | yes | `['recto_center_document' => '/path.jpg']` |
 
@@ -322,6 +323,56 @@ $event = json_decode($rawBody, true);
 
 The API signs the raw JSON body with HMAC-SHA256 using your API key as the secret.
 The header format is `sha256=<hex_digest>`.
+
+---
+
+## AML/Sanctions Screening
+
+### Inline (during KYC)
+
+Add `requireAml: true` to your verify options to automatically screen the extracted identity:
+
+```php
+$result = $kyv->verify(new VerifyOptions(
+    steps: ['selfie', 'recto', 'verso'],
+    target: 'SN-CIN',
+    language: 'fr',
+    challengeMode: 'minimal',
+    requireFaceMatch: true,
+    requireAml: true,
+    images: [ ... ],
+));
+
+if ($result->amlScreening !== null && $result->amlScreening->status === 'hit') {
+    echo "AML match found!\n";
+}
+```
+
+### Standalone: POST /api/v1/verify/aml
+
+Screen a person against international sanctions lists and PEP databases without running a full KYC verification.
+
+```php
+$ch = curl_init('https://kyvshield-naruto.innolinkcloud.com/api/v1/verify/aml');
+curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'X-API-Key: YOUR_API_KEY',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode([
+        'first_name'  => 'John',
+        'last_name'   => 'Doe',
+        'birth_date'  => '1990-01-15',
+        'nationality' => 'US',
+        'id_number'   => '123456789',
+        'id_type'     => 'national_id',
+    ]),
+]);
+$response = json_decode(curl_exec($ch), true);
+// $response['status'] => 'clear' | 'hit' | 'error'
+```
 
 ---
 

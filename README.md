@@ -86,6 +86,43 @@ const results = await kyv.verifyBatch([
 |--------|----------|-------------|
 | `GET` | `/api/v1/challenges` | Get available challenges per mode |
 | `POST` | `/api/v1/kyc/verify` | Submit KYC verification |
+| `POST` | `/api/v1/verify/aml` | Standalone AML/sanctions screening |
+
+## AML/Sanctions Screening
+
+### Inline (during KYC)
+
+Add `requireAml: true` (or `require_aml: true`) to your verify options to screen the extracted identity against international sanctions lists and PEP databases as part of the KYC flow. The `aml_screening` object is included in the response.
+
+### Standalone: POST /api/v1/verify/aml
+
+Screen a person against international sanctions lists and PEP databases without running a full KYC verification.
+
+**Request:**
+```json
+{
+  "first_name": "John",
+  "last_name": "Doe",
+  "birth_date": "YYYY-MM-DD",
+  "nationality": "XX",
+  "id_number": "...",
+  "id_type": "national_id"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "clear",
+  "risk_level": "low",
+  "is_sanctioned": false,
+  "is_pep": false,
+  "matches": [],
+  "screened_against": ["ofac", "un", "eu", "uk", "fr"],
+  "screened_at": "2026-04-12T12:00:00Z",
+  "total_entries_checked": 75746
+}
+```
 
 ## Features
 
