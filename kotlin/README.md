@@ -219,6 +219,76 @@ chosen `challengeMode`.
 
 ---
 
+### `client.identify(options: IdentifyOptions): IdentifyResponse`
+
+Identifies a probe face against enrolled subjects via `POST /api/v1/identify` (multipart/form-data). Returns up to `topK` matches ranked by descending similarity score.
+
+```kotlin
+val result = client.identify(
+    IdentifyOptions(
+        image    = "/path/to/probe.jpg",   // file path, URL, base64, data URI, or ByteArray
+        topK     = 5,                      // max matches (default: 5)
+        minScore = 0.7,                    // minimum score 0–1 (default: 0.0)
+    )
+)
+
+println("Matches: ${result.matches.size}")
+result.matches.forEach { match ->
+    println("  ${match.subjectId} score=${match.score}")
+}
+```
+
+#### `IdentifyOptions`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `image` | `Any` | yes | Probe image — `ByteArray`, URL, data URI, base64, or file path |
+| `topK` | `Int` | no (default `5`) | Maximum number of matches to return |
+| `minScore` | `Double` | no (default `0.0`) | Minimum similarity score threshold (0–1) |
+
+---
+
+### `client.verifyFace(options: VerifyFaceOptions): VerifyFaceResponse`
+
+Compares two face images (1:1 verification) via `POST /api/v1/verify/face` (multipart/form-data).
+
+```kotlin
+val result = client.verifyFace(
+    VerifyFaceOptions(
+        targetImage      = "/path/to/selfie.jpg",
+        sourceImage      = "/path/to/document_photo.jpg",
+        detectionModel   = "retinaface",     // optional
+        recognitionModel = "arcface",         // optional
+    )
+)
+
+println("Match: ${result.isMatch}")              // true/false
+println("Score: ${result.similarityScore}")       // 0–100
+println("Time:  ${result.processingTimeMs}ms")
+```
+
+#### `VerifyFaceOptions`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `targetImage` | `Any` | yes | Face to verify — `ByteArray`, URL, data URI, base64, or file path |
+| `sourceImage` | `Any` | yes | Reference face — same formats as `targetImage` |
+| `detectionModel` | `String?` | no | Face detection model name (server default if null) |
+| `recognitionModel` | `String?` | no | Face recognition model name (server default if null) |
+
+#### `VerifyFaceResponse`
+
+| Field | Type | Description |
+|---|---|---|
+| `success` | `Boolean` | Whether the API call succeeded |
+| `isMatch` | `Boolean` | Whether the two faces match |
+| `similarityScore` | `Double` | Cosine similarity score (0–100) |
+| `detectionModel` | `String?` | Detection model used by server |
+| `recognitionModel` | `String?` | Recognition model used by server |
+| `processingTimeMs` | `Int` | Server-side processing time |
+
+---
+
 ### `client.verifyBatch(optionsList: List<VerifyOptions>): List<BatchResult>`
 
 Submit up to 10 KYC verifications concurrently using a dedicated thread pool. Results are returned in the same order as the input list. Images within each verification are compressed in parallel (up to `DEFAULT_MAX_CONCURRENT_COMPRESS = 20`). The executor is shut down in a `finally` block.
