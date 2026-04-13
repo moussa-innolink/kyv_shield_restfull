@@ -367,6 +367,68 @@ type BatchResult struct {
 	Error error
 }
 
+// ─── Identify ─────────────────────────────────────────────────────────────
+
+// IdentifyOptions holds optional parameters for the POST /api/v1/identify call.
+type IdentifyOptions struct {
+	// TopK is the maximum number of matches to return. Defaults to server-side default when 0.
+	TopK int
+
+	// MinScore is the minimum similarity score (0–1) to include a match.
+	// Defaults to server-side default when 0.
+	MinScore float64
+}
+
+// IdentifyMatch represents a single face match returned by the identify endpoint.
+type IdentifyMatch struct {
+	// SubjectID is the unique identifier of the matched subject.
+	SubjectID string `json:"subject_id"`
+
+	// Score is the similarity score in the range [0, 1].
+	Score float64 `json:"score"`
+
+	// Metadata contains optional key-value metadata associated with the subject.
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// IdentifyResponse is the top-level response from POST /api/v1/identify.
+type IdentifyResponse struct {
+	// Success indicates whether the API call succeeded.
+	Success bool `json:"success"`
+
+	// Matches contains the ranked list of face matches.
+	Matches []IdentifyMatch `json:"matches"`
+
+	// ProcessingTimeMs is the server-side processing time in milliseconds.
+	ProcessingTimeMs int `json:"processing_time_ms"`
+}
+
+// ─── Face Verify (standalone) ─────────────────────────────────────────────
+
+// FaceVerifyOptions holds optional parameters for the POST /api/v1/verify/face call.
+type FaceVerifyOptions struct {
+	// DetectionModel overrides the face detection model (e.g. "retinaface", "scrfd").
+	DetectionModel string
+
+	// RecognitionModel overrides the face recognition model (e.g. "arcface", "adaface").
+	RecognitionModel string
+}
+
+// FaceVerifyResponse is the top-level response from POST /api/v1/verify/face.
+type FaceVerifyResponse struct {
+	// Success indicates whether the API call succeeded.
+	Success bool `json:"success"`
+
+	// IsMatch indicates whether the two faces match.
+	IsMatch bool `json:"is_match"`
+
+	// SimilarityScore is the cosine similarity expressed as a value in [0, 100].
+	SimilarityScore float64 `json:"similarity_score"`
+
+	// ProcessingTimeMs is the server-side processing time in milliseconds.
+	ProcessingTimeMs int `json:"processing_time_ms"`
+}
+
 // ─── Error Types ──────────────────────────────────────────────────────────────
 
 // APIError represents a structured error returned by the KyvShield API.

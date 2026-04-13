@@ -287,6 +287,137 @@ final class KyvShield
         return hash_equals($expectedHex, $received);
     }
 
+    /**
+     * POST /api/v1/identify  (multipart/form-data)
+     *
+     * Search for matching identities in the enrolled database using a face image.
+     *
+     * @param  string  $image    File path, URL, base64 string, or data URI
+     * @param  array{top_k?: int, min_score?: float}  $options
+     * @return IdentifyResponse
+     * @throws KyvShieldException
+     */
+    public function identify(string $image, array $options = []): IdentifyResponse
+    {
+        $topK     = (int) ($options['top_k'] ?? 3);
+        $minScore = (float) ($options['min_score'] ?? 0.6);
+
+        $this->log('info', sprintf('POST /api/v1/identify (top_k=%d, min_score=%.2f)', $topK, $minScore));
+        $startMs = (int) (microtime(true) * 1000);
+
+        $tmpFiles = [];
+        try {
+            $bytes    = $this->resolveImage($image, 'identify_image');
+            $bytes    = $this->processImage($bytes, 'identify_image');
+            $tmpFile  = tempnam(sys_get_temp_dir(), 'kyv_');
+            if ($tmpFile === false) {
+                throw new KyvShieldException('Could not create temporary file for identify image');
+            }
+            $tmpFiles[] = $tmpFile;
+            file_put_contents($tmpFile, $bytes);
+            $mimeType = $this->sniffMimeType($bytes);
+
+            $fields = [
+                'image'     => new \CURLFile($tmpFile, $mimeType, 'image.jpg'),
+                'top_k'     => (string) $topK,
+                'min_score'  => (string) $minScore,
+            ];
+
+            $data = $this->request('POST', '/api/v1/identify', $fields);
+        } finally {
+            foreach ($tmpFiles as $f) {
+                if (is_file($f)) {
+                    @unlink($f);
+                }
+            }
+        }
+
+        $response = IdentifyResponse::fromArray($data);
+        $elapsed  = (int) (microtime(true) * 1000) - $startMs;
+        $count    = count($response->candidates);
+        $this->log('info', sprintf('Identify complete: %d candidate(s) in %dms', $count, $elapsed));
+
+        return $response;
+    }
+
+    /**
+     * POST /api/v1/verify/face  (multipart/form-data)
+     *
+     * Compare two face images (1:1 verification) and return a similarity score.
+     *
+     * @param  string  $targetImage  File path, URL, base64 string, or data URI
+     * @param  string  $sourceImage  File path, URL, base64 string, or data URI
+     * @param  array{detection_model?: string, recognition_model?: string}  $options
+     * @return VerifyFaceResponse
+     * @throws KyvShieldException
+     */
+    public function verifyFace(string $targetImage, string $sourceImage, array $options = []): VerifyFaceResponse
+    {
+        $detectionModel   = isset($options['detection_model']) ? (string) $options['detection_model'] : null;
+        $recognitionModel = isset($options['recognition_model']) ? (string) $options['recognition_model'] : null;
+
+        $this->log('info', sprintf(
+            'POST /api/v1/verify/face (detection=%s, recognition=%s)',
+            $detectionModel ?? 'default',
+            $recognitionModel ?? 'default',
+        ));
+        $startMs = (int) (microtime(true) * 1000);
+
+        $tmpFiles = [];
+        try {
+            // Resolve target image
+            $targetBytes = $this->resolveImage($targetImage, 'target_image');
+            $targetBytes = $this->processImage($targetBytes, 'target_image');
+            $targetTmp   = tempnam(sys_get_temp_dir(), 'kyv_');
+            if ($targetTmp === false) {
+                throw new KyvShieldException('Could not create temporary file for target image');
+            }
+            $tmpFiles[] = $targetTmp;
+            file_put_contents($targetTmp, $targetBytes);
+
+            // Resolve source image
+            $sourceBytes = $this->resolveImage($sourceImage, 'source_image');
+            $sourceBytes = $this->processImage($sourceBytes, 'source_image');
+            $sourceTmp   = tempnam(sys_get_temp_dir(), 'kyv_');
+            if ($sourceTmp === false) {
+                throw new KyvShieldException('Could not create temporary file for source image');
+            }
+            $tmpFiles[] = $sourceTmp;
+            file_put_contents($sourceTmp, $sourceBytes);
+
+            $fields = [
+                'target_image' => new \CURLFile($targetTmp, $this->sniffMimeType($targetBytes), 'target.jpg'),
+                'source_image' => new \CURLFile($sourceTmp, $this->sniffMimeType($sourceBytes), 'source.jpg'),
+            ];
+
+            if ($detectionModel !== null) {
+                $fields['detection_model'] = $detectionModel;
+            }
+            if ($recognitionModel !== null) {
+                $fields['recognition_model'] = $recognitionModel;
+            }
+
+            $data = $this->request('POST', '/api/v1/verify/face', $fields);
+        } finally {
+            foreach ($tmpFiles as $f) {
+                if (is_file($f)) {
+                    @unlink($f);
+                }
+            }
+        }
+
+        $response = VerifyFaceResponse::fromArray($data);
+        $elapsed  = (int) (microtime(true) * 1000) - $startMs;
+        $this->log('info', sprintf(
+            'VerifyFace complete: %s (score=%.2f) in %dms',
+            $response->isMatch ? 'MATCH' : 'NO_MATCH',
+            $response->similarityScore,
+            $elapsed,
+        ));
+
+        return $response;
+    }
+
     // =========================================================================
     // PRIVATE HELPERS
     // =========================================================================
@@ -736,6 +867,26 @@ final class KyvShield
             throw new KyvShieldException('Failed to read image file: ' . $value);
         }
         return $bytes;
+    }
+
+    /**
+     * Detect MIME type from the first bytes of image data.
+     *
+     * @param  string  $bytes  Raw image bytes
+     * @return string          MIME type (defaults to image/jpeg)
+     */
+    private function sniffMimeType(string $bytes): string
+    {
+        if (strlen($bytes) >= 4) {
+            $magic = substr($bytes, 0, 4);
+            if (str_starts_with($magic, "\x89PNG")) {
+                return 'image/png';
+            }
+            if (str_starts_with($magic, 'RIFF')) {
+                return 'image/webp';
+            }
+        }
+        return 'image/jpeg';
     }
 
 }

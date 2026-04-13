@@ -2,8 +2,12 @@ package sn.innolink.kyvshield;
 
 import org.json.JSONObject;
 import sn.innolink.kyvshield.model.ChallengesResponse;
+import sn.innolink.kyvshield.model.IdentifyOptions;
+import sn.innolink.kyvshield.model.IdentifyResponse;
 import sn.innolink.kyvshield.model.KycResponse;
 import sn.innolink.kyvshield.model.Step;
+import sn.innolink.kyvshield.model.VerifyFaceOptions;
+import sn.innolink.kyvshield.model.VerifyFaceResponse;
 import sn.innolink.kyvshield.model.VerifyOptions;
 
 import javax.crypto.Mac;
@@ -85,8 +89,10 @@ public final class KyvShield {
     /** Maximum number of images compressed in parallel. */
     public static final int DEFAULT_MAX_CONCURRENT_COMPRESS = 20;
 
-    private static final String CHALLENGES_PATH = "/api/v1/challenges";
-    private static final String VERIFY_PATH     = "/api/v1/kyc/verify";
+    private static final String CHALLENGES_PATH   = "/api/v1/challenges";
+    private static final String VERIFY_PATH       = "/api/v1/kyc/verify";
+    private static final String IDENTIFY_PATH     = "/api/v1/identify";
+    private static final String VERIFY_FACE_PATH  = "/api/v1/verify/face";
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
 
@@ -219,6 +225,91 @@ public final class KyvShield {
         } catch (Exception e) {
             throw new KyvShieldException(
                     "Failed to parse KYC verify response: " + e.getMessage(), e);
+        }
+    }
+
+    // ── Identify ──────────────────────────────────────────────────────────────
+
+    /**
+     * Identifies a face against enrolled subjects.
+     *
+     * <p>Calls {@code POST /api/v1/identify} as a multipart/form-data request.
+     * The probe image is resolved using the same logic as {@link #verify}: file
+     * paths, URLs, data URIs, base64 strings, and raw byte arrays are all accepted.
+     *
+     * @param options identify options (image, topK, minScore)
+     * @return parsed {@link IdentifyResponse} with ranked matches
+     * @throws KyvShieldException if the image cannot be read, the request fails,
+     *                            or the response cannot be parsed
+     */
+    public IdentifyResponse identify(IdentifyOptions options) {
+        log("POST " + IDENTIFY_PATH + " (topK=" + options.getTopK() + ", minScore=" + options.getMinScore() + ")");
+        long startMs = System.currentTimeMillis();
+
+        String boundary = "KyvShield-" + UUID.randomUUID().toString().replace("-", "");
+        byte[] body = buildIdentifyMultipartBody(options, boundary);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + IDENTIFY_PATH))
+                .header("X-API-Key", apiKey)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .timeout(DEFAULT_TIMEOUT)
+                .build();
+
+        String responseBody = executeRequest(request);
+        try {
+            IdentifyResponse result = IdentifyResponse.fromJson(new JSONObject(responseBody));
+            long elapsed = System.currentTimeMillis() - startMs;
+            log("Identify complete: " + result.getMatches().size() + " matches in " + elapsed + "ms");
+            return result;
+        } catch (Exception e) {
+            throw new KyvShieldException(
+                    "Failed to parse identify response: " + e.getMessage(), e);
+        }
+    }
+
+    // ── Verify Face ──────────────────────────────────────────────────────────
+
+    /**
+     * Compares two face images (1:1 verification).
+     *
+     * <p>Calls {@code POST /api/v1/verify/face} as a multipart/form-data request.
+     * Both images are resolved using the same logic as {@link #verify}: file
+     * paths, URLs, data URIs, base64 strings, and raw byte arrays are all accepted.
+     *
+     * @param options verify-face options (target image, source image, optional models)
+     * @return parsed {@link VerifyFaceResponse}
+     * @throws KyvShieldException if an image cannot be read, the request fails,
+     *                            or the response cannot be parsed
+     */
+    public VerifyFaceResponse verifyFace(VerifyFaceOptions options) {
+        log("POST " + VERIFY_FACE_PATH);
+        long startMs = System.currentTimeMillis();
+
+        String boundary = "KyvShield-" + UUID.randomUUID().toString().replace("-", "");
+        byte[] body = buildVerifyFaceMultipartBody(options, boundary);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + VERIFY_FACE_PATH))
+                .header("X-API-Key", apiKey)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .timeout(DEFAULT_TIMEOUT)
+                .build();
+
+        String responseBody = executeRequest(request);
+        try {
+            VerifyFaceResponse result = VerifyFaceResponse.fromJson(new JSONObject(responseBody));
+            long elapsed = System.currentTimeMillis() - startMs;
+            log("VerifyFace complete: match=" + result.isMatch()
+                    + " score=" + result.getSimilarityScore() + " in " + elapsed + "ms");
+            return result;
+        } catch (Exception e) {
+            throw new KyvShieldException(
+                    "Failed to parse verify-face response: " + e.getMessage(), e);
         }
     }
 
@@ -565,6 +656,106 @@ public final class KyvShield {
         // ── Final boundary ───────────────────────────────────────────────────
         parts.add(finalBoundary.getBytes(StandardCharsets.UTF_8));
 
+        return concatAll(parts);
+    }
+
+    /**
+     * Builds the multipart/form-data body for the {@code POST /api/v1/identify} endpoint.
+     */
+    private byte[] buildIdentifyMultipartBody(IdentifyOptions options, String boundary) {
+        List<byte[]> parts = new ArrayList<>();
+        String crlf = "\r\n";
+        String dashBoundary = "--" + boundary + crlf;
+        String finalBoundary = "--" + boundary + "--" + crlf;
+
+        // ── Text fields ──────────────────────────────────────────────────────
+        parts.add(textPart(boundary, "top_k", String.valueOf(options.getTopK())));
+        parts.add(textPart(boundary, "min_score", String.valueOf(options.getMinScore())));
+
+        // ── Image ────────────────────────────────────────────────────────────
+        byte[] imageBytes;
+        String filename;
+        if (options.getImageBytes() != null && options.getImageBytes().length > 0) {
+            imageBytes = processImage(options.getImageBytes(), "image");
+            filename = "image.jpg";
+        } else {
+            byte[] raw = resolveImage(options.getImage(), "image");
+            imageBytes = processImage(raw, "image");
+            filename = deriveFilename(options.getImage(), "image");
+        }
+        String contentType = inferContentTypeFromBytes(imageBytes);
+        String header = dashBoundary
+                + "Content-Disposition: form-data; name=\"image\"; filename=\"" + filename + "\"" + crlf
+                + "Content-Type: " + contentType + crlf
+                + crlf;
+        parts.add(concat(header.getBytes(StandardCharsets.UTF_8),
+                imageBytes,
+                crlf.getBytes(StandardCharsets.UTF_8)));
+
+        // ── Final boundary ───────────────────────────────────────────────────
+        parts.add(finalBoundary.getBytes(StandardCharsets.UTF_8));
+        return concatAll(parts);
+    }
+
+    /**
+     * Builds the multipart/form-data body for the {@code POST /api/v1/verify/face} endpoint.
+     */
+    private byte[] buildVerifyFaceMultipartBody(VerifyFaceOptions options, String boundary) {
+        List<byte[]> parts = new ArrayList<>();
+        String crlf = "\r\n";
+        String dashBoundary = "--" + boundary + crlf;
+        String finalBoundary = "--" + boundary + "--" + crlf;
+
+        // ── Optional text fields ─────────────────────────────────────────────
+        if (options.getDetectionModel() != null && !options.getDetectionModel().isEmpty()) {
+            parts.add(textPart(boundary, "detection_model", options.getDetectionModel()));
+        }
+        if (options.getRecognitionModel() != null && !options.getRecognitionModel().isEmpty()) {
+            parts.add(textPart(boundary, "recognition_model", options.getRecognitionModel()));
+        }
+
+        // ── Target image ─────────────────────────────────────────────────────
+        byte[] targetBytes;
+        String targetFilename;
+        if (options.getTargetImageBytes() != null && options.getTargetImageBytes().length > 0) {
+            targetBytes = processImage(options.getTargetImageBytes(), "target_image");
+            targetFilename = "target_image.jpg";
+        } else {
+            byte[] raw = resolveImage(options.getTargetImage(), "target_image");
+            targetBytes = processImage(raw, "target_image");
+            targetFilename = deriveFilename(options.getTargetImage(), "target_image");
+        }
+        String targetContentType = inferContentTypeFromBytes(targetBytes);
+        String targetHeader = dashBoundary
+                + "Content-Disposition: form-data; name=\"target_image\"; filename=\"" + targetFilename + "\"" + crlf
+                + "Content-Type: " + targetContentType + crlf
+                + crlf;
+        parts.add(concat(targetHeader.getBytes(StandardCharsets.UTF_8),
+                targetBytes,
+                crlf.getBytes(StandardCharsets.UTF_8)));
+
+        // ── Source image ─────────────────────────────────────────────────────
+        byte[] sourceBytes;
+        String sourceFilename;
+        if (options.getSourceImageBytes() != null && options.getSourceImageBytes().length > 0) {
+            sourceBytes = processImage(options.getSourceImageBytes(), "source_image");
+            sourceFilename = "source_image.jpg";
+        } else {
+            byte[] raw = resolveImage(options.getSourceImage(), "source_image");
+            sourceBytes = processImage(raw, "source_image");
+            sourceFilename = deriveFilename(options.getSourceImage(), "source_image");
+        }
+        String sourceContentType = inferContentTypeFromBytes(sourceBytes);
+        String sourceHeader = dashBoundary
+                + "Content-Disposition: form-data; name=\"source_image\"; filename=\"" + sourceFilename + "\"" + crlf
+                + "Content-Type: " + sourceContentType + crlf
+                + crlf;
+        parts.add(concat(sourceHeader.getBytes(StandardCharsets.UTF_8),
+                sourceBytes,
+                crlf.getBytes(StandardCharsets.UTF_8)));
+
+        // ── Final boundary ───────────────────────────────────────────────────
+        parts.add(finalBoundary.getBytes(StandardCharsets.UTF_8));
         return concatAll(parts);
     }
 

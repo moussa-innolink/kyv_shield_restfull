@@ -150,6 +150,78 @@ class KyvShield(
     }
 
     /**
+     * Identifies a face against enrolled subjects.
+     *
+     * `POST /api/v1/identify` (multipart/form-data)
+     *
+     * The probe image is resolved using the same logic as [verify]: file paths,
+     * URLs, data URIs, base64 strings, and raw byte arrays are all accepted.
+     *
+     * @param options Identify parameters — image, topK, minScore.
+     * @return [IdentifyResponse] with ranked matches.
+     * @throws KyvShieldException on HTTP or parsing errors, or if the image cannot be read.
+     */
+    fun identify(options: IdentifyOptions): IdentifyResponse {
+        val url = "${baseUrl.trimEnd('/')}/api/v1/identify"
+        log("POST /api/v1/identify (topK=${options.topK}, minScore=${options.minScore})")
+        val startMs = System.currentTimeMillis()
+
+        val boundary = generateBoundary()
+        val body = buildIdentifyMultipartBody(options, boundary)
+
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("X-API-Key", apiKey)
+            .header("Content-Type", "multipart/form-data; boundary=$boundary")
+            .header("Accept", "application/json")
+            .timeout(Duration.ofSeconds(timeoutSeconds))
+            .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+            .build()
+
+        val raw = executeRequest(request)
+        val result = parseIdentifyResponse(raw)
+        val elapsed = System.currentTimeMillis() - startMs
+        log("Identify complete: ${result.matches.size} matches in ${elapsed}ms")
+        return result
+    }
+
+    /**
+     * Compares two face images (1:1 verification).
+     *
+     * `POST /api/v1/verify/face` (multipart/form-data)
+     *
+     * Both images are resolved using the same logic as [verify]: file paths,
+     * URLs, data URIs, base64 strings, and raw byte arrays are all accepted.
+     *
+     * @param options Verify-face parameters — target image, source image, optional models.
+     * @return [VerifyFaceResponse] with match decision and similarity score.
+     * @throws KyvShieldException on HTTP or parsing errors, or if an image cannot be read.
+     */
+    fun verifyFace(options: VerifyFaceOptions): VerifyFaceResponse {
+        val url = "${baseUrl.trimEnd('/')}/api/v1/verify/face"
+        log("POST /api/v1/verify/face")
+        val startMs = System.currentTimeMillis()
+
+        val boundary = generateBoundary()
+        val body = buildVerifyFaceMultipartBody(options, boundary)
+
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("X-API-Key", apiKey)
+            .header("Content-Type", "multipart/form-data; boundary=$boundary")
+            .header("Accept", "application/json")
+            .timeout(Duration.ofSeconds(timeoutSeconds))
+            .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+            .build()
+
+        val raw = executeRequest(request)
+        val result = parseVerifyFaceResponse(raw)
+        val elapsed = System.currentTimeMillis() - startMs
+        log("VerifyFace complete: match=${result.isMatch} score=${result.similarityScore} in ${elapsed}ms")
+        return result
+    }
+
+    /**
      * Runs multiple KYC verifications concurrently using a fixed thread pool.
      *
      * Maximum batch size is 10. Results are returned in the same order as the
@@ -558,6 +630,115 @@ class KyvShield(
         return "KyvShield_${random}"
     }
 
+    // ─── Identify multipart builder ─────────────────────────────────────────
+
+    /**
+     * Builds the multipart/form-data body for the `POST /api/v1/identify` endpoint.
+     */
+    private fun buildIdentifyMultipartBody(options: IdentifyOptions, boundary: String): ByteArray {
+        val out = ByteArrayOutputStream()
+        val crlf = "\r\n"
+        val dash = "--"
+
+        fun writeField(name: String, value: String) {
+            out.write("$dash$boundary$crlf".toByteArray())
+            out.write("Content-Disposition: form-data; name=\"$name\"$crlf$crlf".toByteArray())
+            out.write(value.toByteArray(StandardCharsets.UTF_8))
+            out.write(crlf.toByteArray())
+        }
+
+        fun writeImageBytes(name: String, filename: String, bytes: ByteArray) {
+            val mimeType = inferMimeTypeFromBytes(bytes)
+            out.write("$dash$boundary$crlf".toByteArray())
+            out.write("Content-Disposition: form-data; name=\"$name\"; filename=\"$filename\"$crlf".toByteArray())
+            out.write("Content-Type: $mimeType$crlf$crlf".toByteArray())
+            out.write(bytes)
+            out.write(crlf.toByteArray())
+        }
+
+        // text fields
+        writeField("top_k", options.topK.toString())
+        writeField("min_score", options.minScore.toString())
+
+        // image
+        val raw = resolveImage(options.image, "image")
+        val processed = processImage(raw, "image")
+        val filename = if (options.image is ByteArray) "image.jpg"
+        else deriveFilenameForValue("image", options.image)
+        writeImageBytes("image", filename, processed)
+
+        // terminal boundary
+        out.write("$dash$boundary$dash$crlf".toByteArray())
+        return out.toByteArray()
+    }
+
+    // ─── VerifyFace multipart builder ────────────────────────────────────────
+
+    /**
+     * Builds the multipart/form-data body for the `POST /api/v1/verify/face` endpoint.
+     */
+    private fun buildVerifyFaceMultipartBody(options: VerifyFaceOptions, boundary: String): ByteArray {
+        val out = ByteArrayOutputStream()
+        val crlf = "\r\n"
+        val dash = "--"
+
+        fun writeField(name: String, value: String) {
+            out.write("$dash$boundary$crlf".toByteArray())
+            out.write("Content-Disposition: form-data; name=\"$name\"$crlf$crlf".toByteArray())
+            out.write(value.toByteArray(StandardCharsets.UTF_8))
+            out.write(crlf.toByteArray())
+        }
+
+        fun writeImageBytes(name: String, filename: String, bytes: ByteArray) {
+            val mimeType = inferMimeTypeFromBytes(bytes)
+            out.write("$dash$boundary$crlf".toByteArray())
+            out.write("Content-Disposition: form-data; name=\"$name\"; filename=\"$filename\"$crlf".toByteArray())
+            out.write("Content-Type: $mimeType$crlf$crlf".toByteArray())
+            out.write(bytes)
+            out.write(crlf.toByteArray())
+        }
+
+        // optional text fields
+        options.detectionModel?.let { writeField("detection_model", it) }
+        options.recognitionModel?.let { writeField("recognition_model", it) }
+
+        // target image
+        val targetRaw = resolveImage(options.targetImage, "target_image")
+        val targetProcessed = processImage(targetRaw, "target_image")
+        val targetFilename = if (options.targetImage is ByteArray) "target_image.jpg"
+        else deriveFilenameForValue("target_image", options.targetImage)
+        writeImageBytes("target_image", targetFilename, targetProcessed)
+
+        // source image
+        val sourceRaw = resolveImage(options.sourceImage, "source_image")
+        val sourceProcessed = processImage(sourceRaw, "source_image")
+        val sourceFilename = if (options.sourceImage is ByteArray) "source_image.jpg"
+        else deriveFilenameForValue("source_image", options.sourceImage)
+        writeImageBytes("source_image", sourceFilename, sourceProcessed)
+
+        // terminal boundary
+        out.write("$dash$boundary$dash$crlf".toByteArray())
+        return out.toByteArray()
+    }
+
+    /**
+     * Derives a filename from an image value for multipart Content-Disposition.
+     */
+    private fun deriveFilenameForValue(name: String, value: Any): String = when {
+        value is String && (value.startsWith("http://") || value.startsWith("https://")) -> {
+            val urlPath = runCatching { URI.create(value).path }.getOrNull() ?: ""
+            val seg = urlPath.substringAfterLast('/')
+            seg.ifEmpty { "$name.jpg" }
+        }
+        value is String && (value.startsWith("/9j/") || value.startsWith("iVBOR")
+                || value.startsWith("UklGR") || value.startsWith("R0lGO")) -> "$name.jpg"
+        value is String && !value.startsWith("data:image/")
+                && (value.contains('/') || value.contains('\\') || value.matches(Regex(".*\\.\\w{2,5}$"))) -> {
+            File(value).name
+        }
+        else -> "$name.jpg"
+    }
+
     // ─── JSON parsers ────────────────────────────────────────────────────────
 
     private fun parseChallengesResponse(json: String): ChallengesResponse {
@@ -747,6 +928,64 @@ class KyvShield(
             extractedPhotos = extractedPhotos,
             capturedImage = capturedImage,
         )
+    }
+
+    private fun parseIdentifyResponse(json: String): IdentifyResponse {
+        return try {
+            val root = JSONObject(json)
+            val success = root.optBoolean("success", false)
+            val processingTimeMs = root.optInt("processing_time_ms", 0)
+
+            val matchesArr = root.optJSONArray("matches") ?: JSONArray()
+            val matches = (0 until matchesArr.length()).map { i ->
+                val m = matchesArr.getJSONObject(i)
+                val metadataObj = m.optJSONObject("metadata")
+                val metadata: Map<String, Any?>? = if (metadataObj != null) {
+                    metadataObj.keySet().associateWith { key -> metadataObj.opt(key) }
+                } else null
+                IdentifyMatch(
+                    subjectId = m.optString("subject_id", ""),
+                    score = m.optDouble("score", 0.0),
+                    metadata = metadata,
+                )
+            }
+
+            IdentifyResponse(
+                success = success,
+                matches = matches,
+                processingTimeMs = processingTimeMs,
+            )
+        } catch (e: KyvShieldException) {
+            throw e
+        } catch (e: Exception) {
+            throw KyvShieldException(
+                message = "Failed to parse identify response: ${e.message}",
+                responseBody = json,
+                cause = e,
+            )
+        }
+    }
+
+    private fun parseVerifyFaceResponse(json: String): VerifyFaceResponse {
+        return try {
+            val root = JSONObject(json)
+            VerifyFaceResponse(
+                success = root.optBoolean("success", false),
+                isMatch = root.optBoolean("is_match", false),
+                similarityScore = root.optDouble("similarity_score", 0.0),
+                detectionModel = root.optString("detection_model", null).takeUnless { it.isNullOrEmpty() },
+                recognitionModel = root.optString("recognition_model", null).takeUnless { it.isNullOrEmpty() },
+                processingTimeMs = root.optInt("processing_time_ms", 0),
+            )
+        } catch (e: KyvShieldException) {
+            throw e
+        } catch (e: Exception) {
+            throw KyvShieldException(
+                message = "Failed to parse verify-face response: ${e.message}",
+                responseBody = json,
+                cause = e,
+            )
+        }
     }
 
     // ─── JSONArray extension helpers ─────────────────────────────────────────

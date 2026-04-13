@@ -419,3 +419,97 @@ data class VerifyOptions(
      */
     val images: Map<String, Any>,
 )
+
+// ─── Identify ─────────────────────────────────────────────────────────────────
+
+/**
+ * A single match returned by `POST /api/v1/identify`.
+ *
+ * Each match represents a previously enrolled face that resembles the
+ * probe image, ranked by descending similarity score.
+ */
+data class IdentifyMatch(
+    /** Unique identifier of the matched subject */
+    val subjectId: String,
+    /** Similarity score between the probe and this match (0–100) */
+    val score: Double,
+    /** Optional metadata associated with the matched subject */
+    val metadata: Map<String, Any?>?,
+)
+
+/**
+ * Response from `POST /api/v1/identify`.
+ */
+data class IdentifyResponse(
+    /** Whether the API call succeeded */
+    val success: Boolean,
+    /** List of matches ranked by descending similarity score */
+    val matches: List<IdentifyMatch>,
+    /** Server-side processing time in milliseconds */
+    val processingTimeMs: Int,
+)
+
+/**
+ * Options for [KyvShield.identify].
+ *
+ * ```kotlin
+ * val options = IdentifyOptions(
+ *     image = "/path/to/probe.jpg",
+ *     topK = 5,
+ *     minScore = 0.7,
+ * )
+ * ```
+ *
+ * @param image Probe image — accepts [ByteArray], URL string, data URI, base64 string, or file path.
+ * @param topK Maximum number of matches to return. Default: 5.
+ * @param minScore Minimum similarity score threshold (0–1). Default: 0.0.
+ */
+data class IdentifyOptions(
+    val image: Any,
+    val topK: Int = 5,
+    val minScore: Double = 0.0,
+)
+
+// ─── Verify Face ──────────────────────────────────────────────────────────────
+
+/**
+ * Response from `POST /api/v1/verify/face`.
+ */
+data class VerifyFaceResponse(
+    /** Whether the API call succeeded */
+    val success: Boolean,
+    /** Whether the two faces are considered a match */
+    val isMatch: Boolean,
+    /** Cosine similarity score (0–100) */
+    val similarityScore: Double,
+    /** Face detection model used by the server */
+    val detectionModel: String?,
+    /** Face recognition model used by the server */
+    val recognitionModel: String?,
+    /** Server-side processing time in milliseconds */
+    val processingTimeMs: Int,
+)
+
+/**
+ * Options for [KyvShield.verifyFace].
+ *
+ * ```kotlin
+ * val options = VerifyFaceOptions(
+ *     targetImage = "/path/to/selfie.jpg",
+ *     sourceImage = "/path/to/document_photo.jpg",
+ *     detectionModel = "retinaface",
+ *     recognitionModel = "arcface",
+ * )
+ * ```
+ *
+ * @param targetImage The face to verify — accepts [ByteArray], URL string, data URI, base64 string, or file path.
+ * @param sourceImage The reference face to compare against — same formats as [targetImage].
+ * @param detectionModel Optional face detection model name (server default if null).
+ * @param recognitionModel Optional face recognition model name (server default if null).
+ */
+data class VerifyFaceOptions(
+    val targetImage: Any,
+    val sourceImage: Any,
+    val detectionModel: String? = null,
+    val recognitionModel: String? = null,
+)

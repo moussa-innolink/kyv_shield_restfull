@@ -257,6 +257,33 @@ Use `getChallenges()` first to discover which challenges are required for your c
 
 Helper: `getChallenges(string $category, string $mode): string[]`
 
+### `IdentifyResponse`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `success` | `bool` | Request succeeded |
+| `candidates` | `IdentifyCandidate[]` | Matched identities sorted by score descending |
+| `processingTimeMs` | `int` | Processing time in milliseconds |
+
+### `IdentifyCandidate`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `string` | Enrolled identity ID |
+| `score` | `float` | Similarity score 0–1 |
+| `metadata` | `array` | Additional metadata stored with the enrollment |
+
+### `VerifyFaceResponse`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `success` | `bool` | Request succeeded |
+| `isMatch` | `bool` | `true` if faces match |
+| `similarityScore` | `float` | Similarity score 0–100 |
+| `processingTimeMs` | `int` | Processing time in milliseconds |
+| `detectionModel` | `string\|null` | Face detection model used |
+| `recognitionModel` | `string\|null` | Face recognition model used |
+
 ---
 
 ### `verifyBatch(array $optionsList): array`
@@ -300,6 +327,132 @@ foreach ($results as $i => $result) {
     } else {
         echo "[{$i}] ERROR: " . $result['error'] . PHP_EOL;
     }
+}
+```
+
+---
+
+### `identify(string $image, array $options = []): IdentifyResponse`
+
+`POST /api/v1/identify` (multipart/form-data)
+
+Search for matching identities in the enrolled database using a face image (1:N search).
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `$image` | `string` | yes | File path, URL, base64 string, or data URI |
+| `$options['top_k']` | `int` | no | Maximum number of candidates to return (default: `3`) |
+| `$options['min_score']` | `float` | no | Minimum similarity score threshold (default: `0.6`) |
+
+#### `IdentifyResponse`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `success` | `bool` | Request succeeded |
+| `candidates` | `IdentifyCandidate[]` | Matched identities, sorted by score descending |
+| `processingTimeMs` | `int` | Processing time in milliseconds |
+
+#### `IdentifyCandidate`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `string` | Enrolled identity ID |
+| `score` | `float` | Similarity score 0–1 |
+| `metadata` | `array` | Additional metadata stored with the enrollment |
+
+#### Example
+
+```php
+use KyvShield\KyvShield;
+use KyvShield\KyvShieldException;
+
+$kyv = new KyvShield('your-api-key');
+
+try {
+    // From a file path
+    $result = $kyv->identify('/path/to/face.jpg', [
+        'top_k'     => 5,
+        'min_score' => 0.7,
+    ]);
+
+    echo "Found {$result->candidates[0]->id} (score: {$result->candidates[0]->score})\n";
+
+    foreach ($result->candidates as $candidate) {
+        echo "{$candidate->id}: {$candidate->score}\n";
+    }
+
+    // From a URL
+    $result = $kyv->identify('https://cdn.example.com/face.jpg');
+
+    // From base64
+    $result = $kyv->identify(base64_encode(file_get_contents('/path/to/face.jpg')));
+} catch (KyvShieldException $e) {
+    echo "Error: {$e->getMessage()}\n";
+}
+```
+
+---
+
+### `verifyFace(string $targetImage, string $sourceImage, array $options = []): VerifyFaceResponse`
+
+`POST /api/v1/verify/face` (multipart/form-data)
+
+Compare two face images (1:1 verification) and return whether they match.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `$targetImage` | `string` | yes | File path, URL, base64 string, or data URI |
+| `$sourceImage` | `string` | yes | File path, URL, base64 string, or data URI |
+| `$options['detection_model']` | `string` | no | Face detection model (e.g. `'scrfd_10g'`) |
+| `$options['recognition_model']` | `string` | no | Face recognition model (e.g. `'buffalo_l'`) |
+
+#### `VerifyFaceResponse`
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `success` | `bool` | Request succeeded |
+| `isMatch` | `bool` | `true` if faces match |
+| `similarityScore` | `float` | Similarity score 0–100 |
+| `processingTimeMs` | `int` | Processing time in milliseconds |
+| `detectionModel` | `string\|null` | Detection model used |
+| `recognitionModel` | `string\|null` | Recognition model used |
+
+#### Example
+
+```php
+use KyvShield\KyvShield;
+use KyvShield\KyvShieldException;
+
+$kyv = new KyvShield('your-api-key');
+
+try {
+    // Compare two face images
+    $result = $kyv->verifyFace(
+        '/path/to/selfie.jpg',
+        '/path/to/id_photo.jpg',
+        [
+            'detection_model'   => 'scrfd_10g',
+            'recognition_model' => 'buffalo_l',
+        ],
+    );
+
+    if ($result->isMatch) {
+        echo "Faces match! Score: {$result->similarityScore}\n";
+    } else {
+        echo "Faces do NOT match. Score: {$result->similarityScore}\n";
+    }
+
+    // Mix input formats: URL vs local file
+    $result = $kyv->verifyFace(
+        'https://cdn.example.com/selfie.jpg',
+        '/path/to/document_photo.jpg',
+    );
+} catch (KyvShieldException $e) {
+    echo "Error: {$e->getMessage()}\n";
 }
 ```
 

@@ -112,6 +112,74 @@ if (result.getFaceVerification() != null) {
 }
 ```
 
+### `IdentifyResponse identify(IdentifyOptions options)`
+
+Identifies a probe face against enrolled subjects via `POST /api/v1/identify` (multipart/form-data). Returns up to `topK` matches ranked by descending similarity score.
+
+```java
+import sn.innolink.kyvshield.model.IdentifyOptions;
+import sn.innolink.kyvshield.model.IdentifyResponse;
+import sn.innolink.kyvshield.model.IdentifyMatch;
+
+IdentifyOptions options = new IdentifyOptions.Builder()
+    .image("/path/to/probe.jpg")   // file path, URL, base64, data URI, or byte[]
+    .topK(5)                       // max matches (default: 5)
+    .minScore(0.7)                 // minimum score 0–1 (default: 0.0)
+    .build();
+
+IdentifyResponse result = kyv.identify(options);
+System.out.println("Matches: " + result.getMatches().size());
+for (IdentifyMatch match : result.getMatches()) {
+    System.out.println("  " + match.getSubjectId() + " score=" + match.getScore());
+}
+```
+
+#### IdentifyOptions Builder
+
+| Method | Type | Default | Description |
+|--------|------|---------|-------------|
+| `image(String)` | `String` | required | Probe image (path / URL / base64 / data URI) |
+| `imageBytes(byte[])` | `byte[]` | — | Probe image as raw bytes (alternative to `image()`) |
+| `topK(int)` | `int` | `5` | Maximum number of matches to return |
+| `minScore(double)` | `double` | `0.0` | Minimum similarity score threshold (0–1) |
+
+---
+
+### `VerifyFaceResponse verifyFace(VerifyFaceOptions options)`
+
+Compares two face images (1:1 verification) via `POST /api/v1/verify/face` (multipart/form-data).
+
+```java
+import sn.innolink.kyvshield.model.VerifyFaceOptions;
+import sn.innolink.kyvshield.model.VerifyFaceResponse;
+
+VerifyFaceResponse result = kyv.verifyFace(
+    new VerifyFaceOptions.Builder()
+        .targetImage("/path/to/selfie.jpg")
+        .sourceImage("/path/to/document_photo.jpg")
+        .detectionModel("retinaface")     // optional
+        .recognitionModel("arcface")       // optional
+        .build()
+);
+
+System.out.println("Match: " + result.isMatch());              // true/false
+System.out.println("Score: " + result.getSimilarityScore());   // 0–100
+System.out.println("Time:  " + result.getProcessingTimeMs() + "ms");
+```
+
+#### VerifyFaceOptions Builder
+
+| Method | Type | Default | Description |
+|--------|------|---------|-------------|
+| `targetImage(String)` | `String` | required | Face to verify (path / URL / base64 / data URI) |
+| `targetImageBytes(byte[])` | `byte[]` | — | Target image as raw bytes |
+| `sourceImage(String)` | `String` | required | Reference face (path / URL / base64 / data URI) |
+| `sourceImageBytes(byte[])` | `byte[]` | — | Source image as raw bytes |
+| `detectionModel(String)` | `String` | server default | Face detection model name |
+| `recognitionModel(String)` | `String` | server default | Face recognition model name |
+
+---
+
 ### `List<BatchResult> verifyBatch(List<VerifyOptions> optionsList)`
 
 Submit up to 10 KYC verifications concurrently using a dedicated `ExecutorService`. Results are returned in the same order as the input list. The executor is shut down in a `finally` block. Images within each verification are compressed in parallel (up to `DEFAULT_MAX_CONCURRENT_COMPRESS = 20`).

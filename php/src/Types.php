@@ -388,6 +388,103 @@ final class AMLScreening
 }
 
 // =============================================================================
+// IDENTIFY RESPONSE
+// =============================================================================
+
+/**
+ * A single identity candidate returned by POST /api/v1/identify
+ */
+final class IdentifyCandidate
+{
+    public function __construct(
+        public readonly string $id,
+        public readonly float $score,
+        public readonly array $metadata = [],
+    ) {
+    }
+
+    /**
+     * @param  array<string,mixed>  $data
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            id: (string) ($data['id'] ?? ''),
+            score: (float) ($data['score'] ?? 0.0),
+            metadata: $data['metadata'] ?? [],
+        );
+    }
+}
+
+/**
+ * Response from POST /api/v1/identify
+ */
+final class IdentifyResponse
+{
+    /**
+     * @param  IdentifyCandidate[]  $candidates
+     */
+    public function __construct(
+        public readonly bool $success,
+        public readonly array $candidates,
+        public readonly int $processingTimeMs = 0,
+    ) {
+    }
+
+    /**
+     * @param  array<string,mixed>  $data
+     */
+    public static function fromArray(array $data): self
+    {
+        $candidates = [];
+        foreach (($data['candidates'] ?? []) as $c) {
+            $candidates[] = IdentifyCandidate::fromArray($c);
+        }
+
+        return new self(
+            success: (bool) ($data['success'] ?? false),
+            candidates: $candidates,
+            processingTimeMs: (int) ($data['processing_time_ms'] ?? 0),
+        );
+    }
+}
+
+// =============================================================================
+// VERIFY FACE RESPONSE
+// =============================================================================
+
+/**
+ * Response from POST /api/v1/verify/face
+ */
+final class VerifyFaceResponse
+{
+    public function __construct(
+        public readonly bool $success,
+        public readonly bool $isMatch,
+        public readonly float $similarityScore,
+        public readonly int $processingTimeMs = 0,
+        public readonly ?string $detectionModel = null,
+        public readonly ?string $recognitionModel = null,
+    ) {
+    }
+
+    /**
+     * @param  array<string,mixed>  $data
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            success: (bool) ($data['success'] ?? false),
+            isMatch: (bool) ($data['is_match'] ?? false),
+            similarityScore: (float) ($data['similarity_score'] ?? 0.0),
+            processingTimeMs: (int) ($data['processing_time_ms'] ?? 0),
+            detectionModel: isset($data['detection_model']) ? (string) $data['detection_model'] : null,
+            recognitionModel: isset($data['recognition_model']) ? (string) $data['recognition_model'] : null,
+        );
+    }
+}
+
+// =============================================================================
 // FACE VERIFICATION
 // =============================================================================
 

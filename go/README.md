@@ -144,6 +144,118 @@ for i, r := range results {
 }
 ```
 
+### `Identify(ctx context.Context, image interface{}, opts *IdentifyOptions) (*IdentifyResponse, error)`
+
+`POST /api/v1/identify` — searches an enrolled face gallery for matches to the provided face image.
+
+The `image` parameter accepts:
+- `string` — file path, URL, data URI, or base64 string (same resolution order as `VerifyOptions.Images`)
+- `[]byte` — raw image bytes
+
+`opts` may be `nil` to use server-side defaults.
+
+```go
+// Identify from a file path
+resp, err := client.Identify(context.Background(), "/path/to/face.jpg", &kyvshield.IdentifyOptions{
+    TopK:     5,
+    MinScore: 0.7,
+})
+if err != nil {
+    log.Fatal(err)
+}
+for _, m := range resp.Matches {
+    fmt.Printf("subject=%s score=%.3f\n", m.SubjectID, m.Score)
+}
+
+// Identify from a URL
+resp, err = client.Identify(ctx, "https://cdn.example.com/face.jpg", nil)
+
+// Identify from raw bytes
+resp, err = client.Identify(ctx, faceBytes, nil)
+
+// Identify from base64
+resp, err = client.Identify(ctx, base64.StdEncoding.EncodeToString(faceBytes), nil)
+```
+
+#### IdentifyOptions
+
+| Field | Type | Description |
+|---|---|---|
+| `TopK` | `int` | Maximum number of matches to return (0 = server default) |
+| `MinScore` | `float64` | Minimum similarity score threshold 0-1 (0 = server default) |
+
+#### IdentifyResponse
+
+| Field | Type | Description |
+|---|---|---|
+| `Success` | `bool` | Whether the API call succeeded |
+| `Matches` | `[]IdentifyMatch` | Ranked list of face matches |
+| `ProcessingTimeMs` | `int` | Server-side processing time in ms |
+
+#### IdentifyMatch
+
+| Field | Type | Description |
+|---|---|---|
+| `SubjectID` | `string` | Unique identifier of the matched subject |
+| `Score` | `float64` | Similarity score in [0, 1] |
+| `Metadata` | `map[string]interface{}` | Optional key-value metadata |
+
+---
+
+### `VerifyFace(ctx context.Context, targetImage, sourceImage interface{}, opts *FaceVerifyOptions) (*FaceVerifyResponse, error)`
+
+`POST /api/v1/verify/face` — compares two face images and returns whether they match along with a similarity score. Both images are resolved and compressed in parallel.
+
+Both `targetImage` and `sourceImage` accept:
+- `string` — file path, URL, data URI, or base64 string
+- `[]byte` — raw image bytes
+
+`opts` may be `nil` to use server-side defaults.
+
+```go
+// Compare two face images from file paths
+resp, err := client.VerifyFace(context.Background(),
+    "/path/to/id_photo.jpg",    // target
+    "/path/to/selfie.jpg",      // source
+    nil,                         // use default models
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("match=%v similarity=%.2f%%\n", resp.IsMatch, resp.SimilarityScore)
+
+// Mix formats: URL target vs local file source
+resp, err = client.VerifyFace(ctx,
+    "https://cdn.example.com/id_photo.jpg",
+    "/path/to/selfie.jpg",
+    &kyvshield.FaceVerifyOptions{
+        DetectionModel:   "retinaface",
+        RecognitionModel: "arcface",
+    },
+)
+
+// Raw bytes
+resp, err = client.VerifyFace(ctx, idPhotoBytes, selfieBytes, nil)
+```
+
+#### FaceVerifyOptions
+
+| Field | Type | Description |
+|---|---|---|
+| `DetectionModel` | `string` | Face detection model override (e.g. `"retinaface"`, `"scrfd"`) |
+| `RecognitionModel` | `string` | Face recognition model override (e.g. `"arcface"`, `"adaface"`) |
+
+#### FaceVerifyResponse
+
+| Field | Type | Description |
+|---|---|---|
+| `Success` | `bool` | Whether the API call succeeded |
+| `IsMatch` | `bool` | Whether the two faces match |
+| `SimilarityScore` | `float64` | Cosine similarity in [0, 100] |
+| `ProcessingTimeMs` | `int` | Server-side processing time in ms |
+
+---
+
 ### `VerifyWebhookSignature(payload []byte, apiKey, signatureHeader string) bool`
 
 Validates an incoming webhook callback signed with HMAC-SHA256.

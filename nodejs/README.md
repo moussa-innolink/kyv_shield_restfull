@@ -196,6 +196,68 @@ for (const [i, result] of results.entries()) {
 
 ---
 
+### `kyv.identify(image, options?)`
+
+Search for a face across enrolled identities (1:N identification). The image accepts the same formats as `verify` images (file path, URL, Buffer, base64, data URI).
+
+```typescript
+const result = await kyv.identify('./probe.jpg', { topK: 3, minScore: 0.6 });
+
+console.log(`Found ${result.results_count} match(es)`);
+for (const match of result.matches) {
+  console.log(`${match.full_name} — score ${match.score} (${match.document_type})`);
+}
+```
+
+| Parameter         | Type               | Default | Description                               |
+|-------------------|--------------------|---------|-------------------------------------------|
+| `image`           | `string \| Buffer` | —       | Probe image (file path, URL, Buffer, base64, data URI) |
+| `options.topK`    | `number`           | `5`     | Maximum number of matches to return       |
+| `options.minScore`| `number`           | `0.5`   | Minimum similarity score threshold (0–1)  |
+
+**Options:** [`IdentifyOptions`](#identifyoptions)
+
+**Return type:** [`IdentifyResponse`](#identifyresponse)
+
+---
+
+### `kyv.verifyFace(targetImage, sourceImage, options?)`
+
+Compare two face images directly (1:1 face verification) without running a full KYC flow. Both images accept the same formats as `verify` images.
+
+```typescript
+const result = await kyv.verifyFace('./selfie.jpg', './document_photo.jpg');
+
+if (result.is_match) {
+  console.log(`Faces match! Score: ${result.similarity_score}, Confidence: ${result.confidence}`);
+} else {
+  console.log(`Faces do not match. Score: ${result.similarity_score}`);
+}
+```
+
+With custom models:
+
+```typescript
+const result = await kyv.verifyFace(
+  './selfie.jpg',
+  './document_photo.jpg',
+  { detectionModel: 'yolov8', recognitionModel: 'arcface' },
+);
+```
+
+| Parameter                  | Type               | Default        | Description                                  |
+|----------------------------|--------------------|----------------|----------------------------------------------|
+| `targetImage`              | `string \| Buffer` | —              | Reference / target face image                |
+| `sourceImage`              | `string \| Buffer` | —              | Probe / source face image                    |
+| `options.detectionModel`   | `string`           | server default | Face detection model to use                  |
+| `options.recognitionModel` | `string`           | server default | Face recognition model to use                |
+
+**Options:** [`FaceVerifyOptions`](#faceverifyoptions)
+
+**Return type:** [`FaceVerifyResponse`](#faceverifyresponse)
+
+---
+
 ### `KyvShield.verifyWebhookSignature(payload, apiKey, signatureHeader)`
 
 Static method. Validates an incoming KyvShield webhook using HMAC-SHA256.
@@ -361,6 +423,66 @@ interface ExtractedPhoto {
 interface FaceVerification {
   is_match: boolean;
   similarity_score: number;   // 0–100
+}
+```
+
+### `IdentifyOptions`
+
+```typescript
+interface IdentifyOptions {
+  topK?: number;       // max matches to return (default: 5)
+  minScore?: number;   // minimum similarity threshold 0–1 (default: 0.5)
+}
+```
+
+### `IdentifyResponse`
+
+```typescript
+interface IdentifyResponse {
+  success: boolean;
+  search_id: string;
+  results_count: number;
+  matches: IdentifyMatch[];
+  top_k: number;
+  min_score: number;
+  processing_time_ms: number;
+}
+
+interface IdentifyMatch {
+  identity_id: string;
+  score: number;                        // 0–1
+  full_name: string;
+  identifier_key: string;
+  identifier_value: string;
+  document_type: string;
+  country: string;
+  estimated_age: number;
+  predicted_gender: string;
+  extraction: Record<string, unknown>;
+  created_at: string;                   // ISO 8601
+}
+```
+
+### `FaceVerifyOptions`
+
+```typescript
+interface FaceVerifyOptions {
+  detectionModel?: string;    // face detection model (server default if omitted)
+  recognitionModel?: string;  // face recognition model (server default if omitted)
+}
+```
+
+### `FaceVerifyResponse`
+
+```typescript
+interface FaceVerifyResponse {
+  success: boolean;
+  is_match: boolean;
+  similarity_score: number;       // 0–100
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  detection_model: string;
+  recognition_model: string;
+  processing_time_ms: number;
 }
 ```
 

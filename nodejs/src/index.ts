@@ -33,6 +33,10 @@ import * as crypto from 'node:crypto';
 
 import type {
   ChallengesResponse,
+  FaceVerifyOptions,
+  FaceVerifyResponse,
+  IdentifyOptions,
+  IdentifyResponse,
   ImageOptions,
   KycResponse,
   KyvShieldErrorDetails,
@@ -246,6 +250,116 @@ export class KyvShield {
     const failed = results.filter(r => r.status === 'rejected').length;
     this.log('info', `Batch complete: ${passed} pass, ${rejected + failed} reject`);
     return results;
+  }
+
+  /**
+   * Search for a face across enrolled identities.
+   *
+   * Accepts an image in any of the supported formats (file path, URL, Buffer,
+   * base64 string, or data URI) and returns the closest matching identities.
+   *
+   * @param image   - The probe image to search with.
+   * @param options - Optional search parameters (topK, minScore).
+   * @returns An {@link IdentifyResponse} with ranked matches.
+   *
+   * @throws {@link KyvShieldError} on HTTP errors or invalid image input.
+   *
+   * @example
+   * ```ts
+   * const result = await kyv.identify('./probe.jpg', { topK: 3, minScore: 0.6 });
+   *
+   * for (const match of result.matches) {
+   *   console.log(`${match.full_name} — score ${match.score}`);
+   * }
+   * ```
+   */
+  async identify(image: string | Buffer, options?: IdentifyOptions): Promise<IdentifyResponse> {
+    this.log('info', `POST ${API_VERSION}/identify...`);
+    const startMs = Date.now();
+
+    const { body, contentType } = await this.buildImageMultipartBody('image', image, {
+      ...(options?.topK !== undefined && { top_k: String(options.topK) }),
+      ...(options?.minScore !== undefined && { min_score: String(options.minScore) }),
+    });
+
+    const url = `${this.baseUrl}${API_VERSION}/identify`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': this.apiKey,
+        'Content-Type': contentType,
+      },
+      body,
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    await this.assertOk(response);
+    const result = await response.json() as IdentifyResponse;
+    const elapsed = Date.now() - startMs;
+    this.log('info', `Identify complete: ${result.results_count} match(es) in ${elapsed}ms`);
+
+    return result;
+  }
+
+  /**
+   * Compare two face images directly (1:1 face verification).
+   *
+   * Accepts a target image and a source image in any of the supported formats
+   * (file path, URL, Buffer, base64 string, or data URI) and returns a
+   * similarity score indicating whether the faces match.
+   *
+   * @param targetImage - The reference / target face image.
+   * @param sourceImage - The probe / source face image to compare against the target.
+   * @param options     - Optional model parameters (detectionModel, recognitionModel).
+   * @returns A {@link FaceVerifyResponse} with the comparison result.
+   *
+   * @throws {@link KyvShieldError} on HTTP errors or invalid image input.
+   *
+   * @example
+   * ```ts
+   * const result = await kyv.verifyFace('./selfie.jpg', './document_photo.jpg');
+   *
+   * if (result.is_match) {
+   *   console.log(`Faces match! Score: ${result.similarity_score}`);
+   * }
+   * ```
+   */
+  async verifyFace(
+    targetImage: string | Buffer,
+    sourceImage: string | Buffer,
+    options?: FaceVerifyOptions,
+  ): Promise<FaceVerifyResponse> {
+    this.log('info', `POST ${API_VERSION}/verify/face...`);
+    const startMs = Date.now();
+
+    const { body, contentType } = await this.buildTwoImageMultipartBody(
+      'target_image', targetImage,
+      'source_image', sourceImage,
+      {
+        ...(options?.detectionModel !== undefined && { detection_model: options.detectionModel }),
+        ...(options?.recognitionModel !== undefined && { recognition_model: options.recognitionModel }),
+      },
+    );
+
+    const url = `${this.baseUrl}${API_VERSION}/verify/face`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': this.apiKey,
+        'Content-Type': contentType,
+      },
+      body,
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    await this.assertOk(response);
+    const result = await response.json() as FaceVerifyResponse;
+    const elapsed = Date.now() - startMs;
+    this.log('info', `Face verify complete: match=${result.is_match} score=${result.similarity_score} in ${elapsed}ms`);
+
+    return result;
   }
 
   /**
@@ -552,6 +666,128 @@ export class KyvShield {
       body: Buffer.concat(parts),
       contentType: `multipart/form-data; boundary=${boundary}`,
     };
+  }
+
+  /**
+   * Build a multipart/form-data body with a single image field and optional text fields.
+   * Used by {@link identify}.
+   */
+  private async buildImageMultipartBody(
+    fieldName: string,
+    image: string | Buffer,
+    textFields?: Record<string, string>,
+  ): Promise<{ body: Buffer; contentType: string }> {
+    const boundary = crypto.randomUUID().replace(/-/g, '');
+    const CRLF = '\r\n';
+    const parts: Buffer[] = [];
+
+    const textPart = (name: string, value: string): Buffer => {
+      const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}`;
+      return Buffer.concat([Buffer.from(header), Buffer.from(value, 'utf8'), Buffer.from(CRLF)]);
+    };
+
+    const filePart = (name: string, filename: string, mimeType: string, data: Buffer): Buffer => {
+      const header =
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="${name}"; filename="${filename}"${CRLF}` +
+        `Content-Type: ${mimeType}${CRLF}${CRLF}`;
+      return Buffer.concat([Buffer.from(header), data, Buffer.from(CRLF)]);
+    };
+
+    // Text fields
+    if (textFields) {
+      for (const [key, value] of Object.entries(textFields)) {
+        parts.push(textPart(key, value));
+      }
+    }
+
+    // Image field
+    const data = await this.resolveImage(image, fieldName);
+    const filename = this.deriveFilename(image, fieldName);
+    const mimeType = this.guessMimeType(filename);
+    parts.push(filePart(fieldName, filename, mimeType, data));
+
+    // Closing boundary
+    parts.push(Buffer.from(`--${boundary}--${CRLF}`));
+
+    return {
+      body: Buffer.concat(parts),
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+
+  /**
+   * Build a multipart/form-data body with two image fields and optional text fields.
+   * Used by {@link verifyFace}.
+   */
+  private async buildTwoImageMultipartBody(
+    field1Name: string, image1: string | Buffer,
+    field2Name: string, image2: string | Buffer,
+    textFields?: Record<string, string>,
+  ): Promise<{ body: Buffer; contentType: string }> {
+    const boundary = crypto.randomUUID().replace(/-/g, '');
+    const CRLF = '\r\n';
+    const parts: Buffer[] = [];
+
+    const textPart = (name: string, value: string): Buffer => {
+      const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}`;
+      return Buffer.concat([Buffer.from(header), Buffer.from(value, 'utf8'), Buffer.from(CRLF)]);
+    };
+
+    const filePart = (name: string, filename: string, mimeType: string, data: Buffer): Buffer => {
+      const header =
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="${name}"; filename="${filename}"${CRLF}` +
+        `Content-Type: ${mimeType}${CRLF}${CRLF}`;
+      return Buffer.concat([Buffer.from(header), data, Buffer.from(CRLF)]);
+    };
+
+    // Text fields
+    if (textFields) {
+      for (const [key, value] of Object.entries(textFields)) {
+        parts.push(textPart(key, value));
+      }
+    }
+
+    // Resolve both images in parallel
+    const [data1, data2] = await Promise.all([
+      this.resolveImage(image1, field1Name),
+      this.resolveImage(image2, field2Name),
+    ]);
+
+    const filename1 = this.deriveFilename(image1, field1Name);
+    const filename2 = this.deriveFilename(image2, field2Name);
+
+    parts.push(filePart(field1Name, filename1, this.guessMimeType(filename1), data1));
+    parts.push(filePart(field2Name, filename2, this.guessMimeType(filename2), data2));
+
+    // Closing boundary
+    parts.push(Buffer.from(`--${boundary}--${CRLF}`));
+
+    return {
+      body: Buffer.concat(parts),
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+
+  /**
+   * Derive a filename from an image value. Used by the single/two-image multipart builders.
+   * For file paths, uses the basename. For everything else, returns a default name.
+   */
+  private deriveFilename(value: string | Buffer, fallbackName: string): string {
+    if (Buffer.isBuffer(value)) return `${fallbackName}.jpg`;
+    if (value.startsWith('data:image/') || value.startsWith('http://') || value.startsWith('https://')) {
+      return `${fallbackName}.jpg`;
+    }
+    // Check if it looks like base64
+    if (value.length > 256) {
+      const isJpegB64 = value.startsWith('/9j/');
+      const isPngB64 = value.startsWith('iVBOR');
+      const isWebpB64 = value.startsWith('UklGR');
+      if (isJpegB64 || isPngB64 || isWebpB64) return `${fallbackName}.jpg`;
+    }
+    // Treat as file path
+    return path.basename(value);
   }
 
   /**

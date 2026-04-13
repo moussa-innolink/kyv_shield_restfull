@@ -451,6 +451,252 @@ func (c *Client) VerifyBatch(ctx context.Context, optsList []*VerifyOptions) ([]
 	return results, nil
 }
 
+// ─── Identify ─────────────────────────────────────────────────────────────────
+
+// Identify submits a face image to POST /api/v1/identify and returns the
+// top matching subjects from the enrolled gallery.
+//
+// The image parameter accepts the same formats as VerifyOptions.Images values:
+//   - file path on disk
+//   - "http://" or "https://" URL (downloaded automatically)
+//   - raw []byte (passed directly)
+//   - base64 string or data URI
+//
+// opts may be nil to use server-side defaults.
+func (c *Client) Identify(ctx context.Context, image interface{}, opts *IdentifyOptions) (*IdentifyResponse, error) {
+	raw, filename, err := c.resolveImageInput(image, "image")
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: resolve image: %w", err)
+	}
+
+	processed, procErr := c.processImage(raw, "image")
+	if procErr != nil {
+		c.logf("Image image: processing failed (%v) — using original", procErr)
+		processed = raw
+	}
+
+	c.logf("POST /api/v1/identify...")
+	startMs := time.Now()
+
+	// ── Build multipart body ──────────────────────────────────────────────────
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	if err := attachBytes(mw, "image", filename, processed); err != nil {
+		return nil, err
+	}
+
+	if opts != nil {
+		if opts.TopK > 0 {
+			if err := mw.WriteField("top_k", fmt.Sprintf("%d", opts.TopK)); err != nil {
+				return nil, fmt.Errorf("kyvshield: write field 'top_k': %w", err)
+			}
+		}
+		if opts.MinScore > 0 {
+			if err := mw.WriteField("min_score", fmt.Sprintf("%g", opts.MinScore)); err != nil {
+				return nil, fmt.Errorf("kyvshield: write field 'min_score': %w", err)
+			}
+		}
+	}
+
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("kyvshield: close multipart writer: %w", err)
+	}
+
+	// ── HTTP request ──────────────────────────────────────────────────────────
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/api/v1/identify", &buf)
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: build request: %w", err)
+	}
+	c.setAuthHeader(req)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: POST /api/v1/identify: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: read response body: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("kyvshield: POST /api/v1/identify returned HTTP %d", resp.StatusCode),
+			Body:       body,
+		}
+	}
+
+	var result IdentifyResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("kyvshield: decode identify response: %w", err)
+	}
+	elapsed := time.Since(startMs).Milliseconds()
+	c.logf("Identify complete: %d matches in %dms", len(result.Matches), elapsed)
+	return &result, nil
+}
+
+// ─── VerifyFace ───────────────────────────────────────────────────────────────
+
+// VerifyFace compares two face images via POST /api/v1/verify/face and returns
+// whether they match along with a similarity score.
+//
+// Both targetImage and sourceImage accept the same formats as VerifyOptions.Images
+// values: file path, URL, raw []byte, base64 string, or data URI.
+//
+// opts may be nil to use server-side defaults.
+func (c *Client) VerifyFace(ctx context.Context, targetImage, sourceImage interface{}, opts *FaceVerifyOptions) (*FaceVerifyResponse, error) {
+	// Resolve both images in parallel.
+	type resolved struct {
+		data     []byte
+		filename string
+		err      error
+	}
+
+	var wg sync.WaitGroup
+	var target, source resolved
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		target.data, target.filename, target.err = c.resolveImageInput(targetImage, "target")
+	}()
+	go func() {
+		defer wg.Done()
+		source.data, source.filename, source.err = c.resolveImageInput(sourceImage, "source")
+	}()
+	wg.Wait()
+
+	if target.err != nil {
+		return nil, fmt.Errorf("kyvshield: resolve target image: %w", target.err)
+	}
+	if source.err != nil {
+		return nil, fmt.Errorf("kyvshield: resolve source image: %w", source.err)
+	}
+
+	// Process both images in parallel.
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		processed, err := c.processImage(target.data, "target")
+		if err != nil {
+			c.logf("Image target: processing failed (%v) — using original", err)
+			return
+		}
+		target.data = processed
+	}()
+	go func() {
+		defer wg.Done()
+		processed, err := c.processImage(source.data, "source")
+		if err != nil {
+			c.logf("Image source: processing failed (%v) — using original", err)
+			return
+		}
+		source.data = processed
+	}()
+	wg.Wait()
+
+	c.logf("POST /api/v1/verify/face...")
+	startMs := time.Now()
+
+	// ── Build multipart body ──────────────────────────────────────────────────
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	if err := attachBytes(mw, "target", target.filename, target.data); err != nil {
+		return nil, err
+	}
+	if err := attachBytes(mw, "source", source.filename, source.data); err != nil {
+		return nil, err
+	}
+
+	if opts != nil {
+		if opts.DetectionModel != "" {
+			if err := mw.WriteField("detection_model", opts.DetectionModel); err != nil {
+				return nil, fmt.Errorf("kyvshield: write field 'detection_model': %w", err)
+			}
+		}
+		if opts.RecognitionModel != "" {
+			if err := mw.WriteField("recognition_model", opts.RecognitionModel); err != nil {
+				return nil, fmt.Errorf("kyvshield: write field 'recognition_model': %w", err)
+			}
+		}
+	}
+
+	if err := mw.Close(); err != nil {
+		return nil, fmt.Errorf("kyvshield: close multipart writer: %w", err)
+	}
+
+	// ── HTTP request ──────────────────────────────────────────────────────────
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/api/v1/verify/face", &buf)
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: build request: %w", err)
+	}
+	c.setAuthHeader(req)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: POST /api/v1/verify/face: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("kyvshield: read response body: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("kyvshield: POST /api/v1/verify/face returned HTTP %d", resp.StatusCode),
+			Body:       body,
+		}
+	}
+
+	var result FaceVerifyResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("kyvshield: decode verify/face response: %w", err)
+	}
+	elapsed := time.Since(startMs).Milliseconds()
+	c.logf("VerifyFace complete: match=%v score=%.2f in %dms", result.IsMatch, result.SimilarityScore, elapsed)
+	return &result, nil
+}
+
+// ─── resolveImageInput ────────────────────────────────────────────────────────
+
+// resolveImageInput converts the polymorphic image parameter (string, []byte, or
+// any supported format) into raw bytes and a filename for multipart attachment.
+func (c *Client) resolveImageInput(image interface{}, label string) ([]byte, string, error) {
+	switch v := image.(type) {
+	case []byte:
+		if len(v) == 0 {
+			return nil, "", fmt.Errorf("empty byte slice for %s", label)
+		}
+		return v, label + ".jpg", nil
+	case string:
+		if v == "" {
+			return nil, "", fmt.Errorf("empty string for %s", label)
+		}
+		raw, err := c.resolveImageWithLog(v, label)
+		if err != nil {
+			return nil, "", err
+		}
+		return raw, deriveFilename(v, label), nil
+	default:
+		return nil, "", fmt.Errorf("unsupported image type %T for %s: must be string or []byte", image, label)
+	}
+}
+
 // ─── Webhook Signature Verification ──────────────────────────────────────────
 
 // VerifyWebhookSignature verifies the HMAC-SHA256 signature of a webhook payload.

@@ -349,6 +349,106 @@ export interface KyvShieldErrorDetails {
   body?: unknown;
 }
 
+// ─── Identify ─────────────────────────────────────────────────────────────────
+
+/**
+ * Options for KyvShield.identify().
+ */
+export interface IdentifyOptions {
+  /**
+   * Maximum number of matches to return.
+   * @default 5
+   */
+  topK?: number;
+
+  /**
+   * Minimum similarity score threshold (0–1) for a match to be included.
+   * @default 0.5
+   */
+  minScore?: number;
+}
+
+/** A single identity match returned by the identify endpoint */
+export interface IdentifyMatch {
+  /** Unique identifier of the matched identity */
+  identity_id: string;
+  /** Similarity score (0–1) */
+  score: number;
+  /** Full name of the matched identity */
+  full_name: string;
+  /** Key of the identifier used (e.g. 'cin_number') */
+  identifier_key: string;
+  /** Value of the identifier */
+  identifier_value: string;
+  /** Document type that was used for enrolment */
+  document_type: string;
+  /** Country code */
+  country: string;
+  /** Estimated age of the person */
+  estimated_age: number;
+  /** Predicted gender */
+  predicted_gender: string;
+  /** Extraction data from the original enrolment */
+  extraction: Record<string, unknown>;
+  /** When the identity was created (ISO 8601) */
+  created_at: string;
+}
+
+/** Response from POST /api/v1/identify */
+export interface IdentifyResponse {
+  /** Whether the API call succeeded */
+  success: boolean;
+  /** Unique identifier for this search request */
+  search_id: string;
+  /** Number of matches returned */
+  results_count: number;
+  /** List of matching identities ordered by score (descending) */
+  matches: IdentifyMatch[];
+  /** The top_k value that was used */
+  top_k: number;
+  /** The min_score threshold that was used */
+  min_score: number;
+  /** Server-side processing time in milliseconds */
+  processing_time_ms: number;
+}
+
+// ─── Face Verify ──────────────────────────────────────────────────────────────
+
+/**
+ * Options for KyvShield.verifyFace().
+ */
+export interface FaceVerifyOptions {
+  /**
+   * Face detection model to use.
+   * If omitted, the server default is used.
+   */
+  detectionModel?: string;
+
+  /**
+   * Face recognition model to use.
+   * If omitted, the server default is used.
+   */
+  recognitionModel?: string;
+}
+
+/** Response from POST /api/v1/verify/face */
+export interface FaceVerifyResponse {
+  /** Whether the API call succeeded */
+  success: boolean;
+  /** Whether the two faces match */
+  is_match: boolean;
+  /** Cosine similarity score (0–100) */
+  similarity_score: number;
+  /** Confidence level of the comparison */
+  confidence: ConfidenceLevel;
+  /** Detection model used */
+  detection_model: string;
+  /** Recognition model used */
+  recognition_model: string;
+  /** Server-side processing time in milliseconds */
+  processing_time_ms: number;
+}
+
 // ─── Batch ────────────────────────────────────────────────────────────────────
 
 /**
